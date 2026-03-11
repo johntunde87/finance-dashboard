@@ -140,70 +140,118 @@ def compute_rolling_3month_avg(conn):
         'avg_weekly':    {'income': round(mi / 4.33, 2), 'spend': round(ms / 4.33, 2), 'net': round(mn / 4.33, 2)}
     }
 
-def compute_actual_kpis(conn):
-    """Historical actual KPIs at all time horizons, grouped by metric."""
-    rows = conn.execute("""
-        SELECT strftime('%Y-%m', posting_date) as month,
-            COALESCE(SUM(CASE WHEN amount>0 AND is_internal_transfer=0 THEN amount ELSE 0 END), 0) as income,
-            COALESCE(SUM(CASE WHEN amount<0 AND is_internal_transfer=0 THEN ABS(amount) ELSE 0 END), 0) as spend
-        FROM transactions GROUP BY month ORDER BY month
-    """).fetchall()
-    if not rows:
-        return None
+def compute_ytd_table_kpis(conn):
+    """YTD-mode KPI table: all averages derived from YTD totals using calendar-day denominators."""
+    today = date.today()
+    ytd_start = date(today.year, 1, 1).isoformat()
+    ytd_end   = today.isoformat()
 
-    monthly = [{'month': r['month'], 'income': r['income'], 'spend': r['spend'], 'net': r['income'] - r['spend']} for r in rows]
-    n_days  = conn.execute("SELECT COUNT(DISTINCT posting_date) FROM transactions WHERE is_internal_transfer=0").fetchone()[0]
-    n_weeks = conn.execute("SELECT COUNT(DISTINCT strftime('%Y-%W', posting_date)) FROM transactions WHERE is_internal_transfer=0").fetchone()[0]
-    n_months = len(monthly)
+    inc = conn.execute(
+        'SELECT COALESCE(SUM(amount),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount>0 AND is_internal_transfer=0',
+        (ytd_start, ytd_end)
+    ).fetchone()[0]
+    spd = conn.execute(
+        'SELECT COALESCE(SUM(ABS(amount)),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount<0 AND is_internal_transfer=0',
+        (ytd_start, ytd_end)
+    ).fetchone()[0]
+    net = inc - spd
 
-    total_i = sum(m['income'] for m in monthly)
-    total_s = sum(m['spend'] for m in monthly)
-    total_n = total_i - total_s
+    days_elapsed   = (today - date(today.year, 1, 1)).days + 1
+    days_in_year   = 366 if calendar.isleap(today.year) else 365
+    elapsed_weeks  = days_elapsed / 7
+    # Elapsed months: whole months before current + fraction of current month
+    days_in_cur_month  = calendar.monthrange(today.year, today.month)[1]
+    elapsed_months     = (today.month - 1) + today.day / days_in_cur_month
+    elapsed_quarters   = elapsed_months / 3
 
-    quarters = {}
-    for m in monthly:
-        yr, mo = m['month'].split('-')
-        qk = f"{yr}-Q{(int(mo)-1)//3+1}"
-        if qk not in quarters:
-            quarters[qk] = {'income': 0, 'spend': 0, 'net': 0}
-        quarters[qk]['income'] += m['income']
-        quarters[qk]['spend']  += m['spend']
-        quarters[qk]['net']    += m['net']
-    n_quarters = len(quarters)
+    def per(total, divisor):
+        return round(total / divisor, 2) if divisor > 0 else 0.0
 
-    years = {}
-    for m in monthly:
-        yr = m['month'].split('-')[0]
-        if yr not in years:
-            years[yr] = {'income': 0, 'spend': 0, 'net': 0}
-        years[yr]['income'] += m['income']
-        years[yr]['spend']  += m['spend']
-        years[yr]['net']    += m['net']
-    n_years = len(years)
-
-    def avg(total, n): return round(total / max(n, 1), 2)
+    eoy_i = round(inc / days_elapsed * days_in_year, 2) if days_elapsed > 0 else 0.0
+    eoy_s = round(spd / days_elapsed * days_in_year, 2) if days_elapsed > 0 else 0.0
+    eoy_n = round(net / days_elapsed * days_in_year, 2) if days_elapsed > 0 else 0.0
 
     return {
         'income': {
-            'avg_daily':     avg(total_i, n_days),
-            'avg_weekly':    avg(total_i, n_weeks),
-            'avg_monthly':   avg(total_i, n_months),
-            'avg_quarterly': avg(sum(q['income'] for q in quarters.values()), n_quarters),
-            'avg_annual':    avg(sum(y['income'] for y in years.values()), n_years)
+            'avg_daily':     per(inc, days_elapsed),
+            'avg_weekly':    per(inc, elapsed_weeks),
+            'avg_monthly':   per(inc, elapsed_months),
+            'avg_quarterly': per(inc, elapsed_quarters),
+            'ytd_total':     round(inc, 2),
+            'eoy_pace':      eoy_i,
         },
         'spend': {
-            'avg_daily':     avg(total_s, n_days),
-            'avg_weekly':    avg(total_s, n_weeks),
-            'avg_monthly':   avg(total_s, n_months),
-            'avg_quarterly': avg(sum(q['spend'] for q in quarters.values()), n_quarters),
-            'avg_annual':    avg(sum(y['spend'] for y in years.values()), n_years)
+            'avg_daily':     per(spd, days_elapsed),
+            'avg_weekly':    per(spd, elapsed_weeks),
+            'avg_monthly':   per(spd, elapsed_months),
+            'avg_quarterly': per(spd, elapsed_quarters),
+            'ytd_total':     round(spd, 2),
+            'eoy_pace':      eoy_s,
         },
         'net': {
-            'avg_daily':     avg(total_n, n_days),
-            'avg_weekly':    avg(total_n, n_weeks),
-            'avg_monthly':   avg(total_n, n_months),
-            'avg_quarterly': avg(sum(q['net'] for q in quarters.values()), n_quarters),
-            'avg_annual':    avg(sum(y['net'] for y in years.values()), n_years)
+            'avg_daily':     per(net, days_elapsed),
+            'avg_weekly':    per(net, elapsed_weeks),
+            'avg_monthly':   per(net, elapsed_months),
+            'avg_quarterly': per(net, elapsed_quarters),
+            'ytd_total':     round(net, 2),
+            'eoy_pace':      eoy_n,
+        },
+        'meta': {
+            'days_elapsed':       days_elapsed,
+            'days_in_year':       days_in_year,
+            'elapsed_weeks':      round(elapsed_weeks, 2),
+            'elapsed_months':     round(elapsed_months, 2),
+            'elapsed_quarters':   round(elapsed_quarters, 2),
+        }
+    }
+
+
+def compute_trailing_table_kpis(conn):
+    """Trailing-mode KPI table: rolling-window averages using calendar-day denominators."""
+    today = date.today()
+
+    # Trailing 28 calendar days for daily avg
+    t28_start = (today - timedelta(days=27)).isoformat()
+    t28_end   = today.isoformat()
+    inc28 = conn.execute(
+        'SELECT COALESCE(SUM(amount),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount>0 AND is_internal_transfer=0',
+        (t28_start, t28_end)
+    ).fetchone()[0]
+    spd28 = conn.execute(
+        'SELECT COALESCE(SUM(ABS(amount)),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount<0 AND is_internal_transfer=0',
+        (t28_start, t28_end)
+    ).fetchone()[0]
+    net28 = inc28 - spd28
+
+    r4w = compute_rolling_4week_avg(conn)   # weekly avg from 4 complete weeks
+    r3m = compute_rolling_3month_avg(conn)  # monthly/quarterly/annual from 3 complete months
+
+    return {
+        'income': {
+            'avg_daily':        round(inc28 / 28, 2),
+            'avg_weekly':       r4w['avg_weekly']['income'],
+            'avg_monthly':      r3m['avg_monthly']['income'],
+            'avg_quarterly':    r3m['avg_quarterly']['income'],
+            'annualized_trend': r3m['avg_annual']['income'],
+        },
+        'spend': {
+            'avg_daily':        round(spd28 / 28, 2),
+            'avg_weekly':       r4w['avg_weekly']['spend'],
+            'avg_monthly':      r3m['avg_monthly']['spend'],
+            'avg_quarterly':    r3m['avg_quarterly']['spend'],
+            'annualized_trend': r3m['avg_annual']['spend'],
+        },
+        'net': {
+            'avg_daily':        round(net28 / 28, 2),
+            'avg_weekly':       r4w['avg_weekly']['net'],
+            'avg_monthly':      r3m['avg_monthly']['net'],
+            'avg_quarterly':    r3m['avg_quarterly']['net'],
+            'annualized_trend': r3m['avg_annual']['net'],
+        },
+        'meta': {
+            'trailing_daily_days':     28,
+            'trailing_weekly_weeks':   4,
+            'trailing_monthly_months': 3,
         }
     }
 
@@ -236,32 +284,46 @@ def compute_ytd_kpis(conn):
     }
 
 def compute_year_comparison(conn):
-    """Current year vs prior year totals + monthly breakdown. prior_year is None if no data."""
+    """Current year YTD vs prior year same-date YTD. Ensures apples-to-apples comparison."""
     today = date.today()
     cur_yr = today.year
     pri_yr = cur_yr - 1
+
+    # Match exact calendar date in prior year; handle Feb 29 in leap years
+    try:
+        pri_cutoff = date(pri_yr, today.month, today.day)
+    except ValueError:
+        pri_cutoff = date(pri_yr, today.month, today.day - 1)
 
     has_prior = conn.execute(
         "SELECT COUNT(*) FROM transactions WHERE posting_date LIKE ? AND is_internal_transfer=0",
         (f'{pri_yr}%',)
     ).fetchone()[0] > 0
 
-    def year_data(yr):
-        by_month = []
-        for mo in range(1, 13):
+    def ytd_by_month(yr, through_month, through_day):
+        """Monthly breakdown for Jan through through_month (partial last month)."""
+        result = []
+        for mo in range(1, through_month + 1):
             s = date(yr, mo, 1).isoformat()
-            e = date(yr, mo, calendar.monthrange(yr, mo)[1]).isoformat()
+            e = date(yr, mo, through_day).isoformat() if mo == through_month \
+                else date(yr, mo, calendar.monthrange(yr, mo)[1]).isoformat()
             mi = conn.execute('SELECT COALESCE(SUM(amount),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount>0 AND is_internal_transfer=0', (s, e)).fetchone()[0]
             ms = conn.execute('SELECT COALESCE(SUM(ABS(amount)),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount<0 AND is_internal_transfer=0', (s, e)).fetchone()[0]
-            by_month.append({'month': mo, 'label': datetime(yr, mo, 1).strftime('%b'), 'income': round(mi, 2), 'spend': round(ms, 2), 'net': round(mi - ms, 2)})
-        total_i = sum(m['income'] for m in by_month)
-        total_s = sum(m['spend'] for m in by_month)
-        return {'year': yr, 'income': round(total_i, 2), 'spend': round(total_s, 2), 'net': round(total_i - total_s, 2), 'by_month': by_month}
+            result.append({'month': mo, 'label': datetime(yr, mo, 1).strftime('%b'),
+                           'income': round(mi, 2), 'spend': round(ms, 2), 'net': round(mi - ms, 2)})
+        total_i = sum(m['income'] for m in result)
+        total_s = sum(m['spend'] for m in result)
+        return {'year': yr, 'income': round(total_i, 2), 'spend': round(total_s, 2),
+                'net': round(total_i - total_s, 2), 'by_month': result}
+
+    cur_data = ytd_by_month(cur_yr, today.month, today.day)
+    pri_data = ytd_by_month(pri_yr, pri_cutoff.month, pri_cutoff.day) if has_prior else None
 
     return {
-        'current_year':  year_data(cur_yr),
-        'prior_year':    year_data(pri_yr) if has_prior else None,
-        'has_prior_year': has_prior
+        'current_year':    cur_data,
+        'prior_year':      pri_data,
+        'has_prior_year':  has_prior,
+        'comparison_label': f'YTD through {today.strftime("%b")} {today.day} — both years'
     }
 
 
@@ -579,39 +641,23 @@ def api_monthly_detail():
 @app.route('/api/kpis')
 def api_kpis():
     conn = get_db()
-    view = request.args.get('view', 'both')  # actual | projected | both
+    mode = request.args.get('mode', 'ytd')  # ytd | trailing
 
-    has_data  = conn.execute("SELECT COUNT(*) FROM transactions WHERE is_internal_transfer=0").fetchone()[0] > 0
-    actuals   = compute_actual_kpis(conn) if view in ('actual', 'both') else None
-    ytd       = compute_ytd_kpis(conn)
-    compare   = compute_year_comparison(conn)
+    has_data = conn.execute("SELECT COUNT(*) FROM transactions WHERE is_internal_transfer=0").fetchone()[0] > 0
+    ytd      = compute_ytd_kpis(conn)
+    compare  = compute_year_comparison(conn)
 
-    projected = None
-    if view in ('projected', 'both'):
-        r4w = compute_rolling_4week_avg(conn)
-        r3m = compute_rolling_3month_avg(conn)
-        projected = {}
-        for metric in ('income', 'spend', 'net'):
-            projected[metric] = {
-                'avg_daily':     r4w['avg_daily'][metric],
-                'avg_weekly':    r4w['avg_weekly'][metric],
-                'avg_monthly':   r3m['avg_monthly'][metric],
-                'avg_quarterly': r3m['avg_quarterly'][metric],
-                'avg_annual':    r3m['avg_annual'][metric]
-            }
+    table_kpis = None
+    if has_data:
+        table_kpis = compute_ytd_table_kpis(conn) if mode == 'ytd' else compute_trailing_table_kpis(conn)
 
     conn.close()
     return jsonify({
-        'view':          view,
+        'mode':          mode,
         'has_data':      has_data,
-        'actuals':       actuals,
-        'projected':     projected,
+        'table_kpis':    table_kpis,
         'ytd':           ytd,
         'compare_years': compare,
-        'methodology': {
-            'daily_weekly':             'Rolling 4-week average (most recent 4 complete weeks)',
-            'monthly_quarterly_annual': 'Rolling 3-month average (most recent 3 complete months)'
-        }
     })
 
 

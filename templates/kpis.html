@@ -7,11 +7,10 @@
         <h1>KPI Dashboard</h1>
     </div>
 
-    <!-- View toggle -->
-    <div class="mode-bar" id="viewBar">
-        <button class="mode-btn active" data-view="both"      onclick="setView('both')">Actual + Projected</button>
-        <button class="mode-btn"        data-view="actual"    onclick="setView('actual')">Actual Only</button>
-        <button class="mode-btn"        data-view="projected" onclick="setView('projected')">Projected Only</button>
+    <!-- Mode toggle -->
+    <div class="mode-bar" id="modeBar">
+        <button class="mode-btn active" data-mode="ytd"      onclick="setMode('ytd')">YTD View</button>
+        <button class="mode-btn"        data-mode="trailing" onclick="setMode('trailing')">Trailing View</button>
     </div>
 
     <div id="kpiLoading" class="empty-state">Loading...</div>
@@ -34,7 +33,7 @@
         <!-- ── Spending KPIs ────────────────────────────────── -->
         <div class="section kpi-group" id="spendGroup"></div>
 
-        <!-- ── Net Savings KPIs ─────────────────────────────── -->
+        <!-- ── Net KPIs ─────────────────────────────────────── -->
         <div class="section kpi-group" id="netGroup"></div>
 
         <!-- ── Year over Year ───────────────────────────────── -->
@@ -66,17 +65,15 @@
 {% block scripts %}
 <script>
 // ─── STATE ────────────────────────────────────────
-let currentView = 'both';
+let currentMode = 'ytd';   // 'ytd' | 'trailing'
 let compareChartInstance = null;
 
 // ─── INIT ─────────────────────────────────────────
-async function init() {
-    await loadKPIs();
-}
+async function init() { await loadKPIs(); }
 
-function setView(v) {
-    currentView = v;
-    document.querySelectorAll('#viewBar .mode-btn').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+function setMode(m) {
+    currentMode = m;
+    document.querySelectorAll('#modeBar .mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
     loadKPIs();
 }
 
@@ -85,7 +82,7 @@ async function loadKPIs() {
     document.getElementById('kpiContent').classList.add('hidden');
     document.getElementById('kpiEmpty').classList.add('hidden');
 
-    const res  = await fetch(`/api/kpis?view=${currentView}`);
+    const res  = await fetch(`/api/kpis?mode=${currentMode}`);
     const data = await res.json();
 
     document.getElementById('kpiLoading').classList.add('hidden');
@@ -96,102 +93,117 @@ async function loadKPIs() {
     }
 
     document.getElementById('kpiContent').classList.remove('hidden');
-    renderYTD(data.ytd);
-    renderGroup('incomeGroup', 'Income',       'income', data, false);
-    renderGroup('spendGroup',  'Spending',     'spend',  data, true);
-    renderGroup('netGroup',    'Net Savings',  'net',    data, false);
+    renderYTD(data.ytd, data.compare_years);
+    renderGroup('incomeGroup', 'Income',   'income', data.table_kpis);
+    renderGroup('spendGroup',  'Spending', 'spend',  data.table_kpis);
+    renderGroup('netGroup',    'Net',      'net',    data.table_kpis);
     renderCompare(data.compare_years);
-    renderMethodology(data.methodology);
+    renderMethodologyNote(data);
 }
 
 // ─── FORMAT HELPERS ───────────────────────────────
 function fmt(v) {
     return '$' + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 }
-
-function fmtDelta(d, invertColor) {
-    // invertColor=true for spend: higher projected spend than actual is bad (red)
-    const sign = d >= 0 ? '+' : '';
-    const cls  = invertColor
-        ? (d > 0 ? 'negative' : 'positive')
-        : (d >= 0 ? 'positive' : 'negative');
-    return `<span class="${cls}">${sign}${fmt(d)}</span>`;
+function fmtSigned(v, invertColor) {
+    const sign = v >= 0 ? '+' : '';
+    const cls  = invertColor ? (v > 0 ? 'negative' : 'positive') : (v >= 0 ? 'positive' : 'negative');
+    return `<span class="${cls}">${sign}${fmt(v)}</span>`;
 }
 
-// ─── YTD ──────────────────────────────────────────
-function renderYTD(ytd) {
+// ─── YTD SUMMARY CARDS ────────────────────────────
+// Shows current YTD total, prior-year same-date YTD total, YoY change, and EOY pace.
+function renderYTD(ytd, compare) {
     document.getElementById('ytdYearLabel').textContent = ytd.year;
     const total = ytd.days_elapsed + ytd.days_remaining;
     document.getElementById('ytdDaysLabel').textContent =
         `Day ${ytd.days_elapsed} of ${total} · ${ytd.days_remaining} days remaining`;
 
-    const pct  = Math.round((ytd.days_elapsed / total) * 100);
+    const pct = Math.round((ytd.days_elapsed / total) * 100);
+    const pri = compare && compare.has_prior_year ? compare.prior_year : null;
+
     const cards = [
-        { label: 'YTD Income', actual: ytd.income, eoy: ytd.projected_eoy_income, valCls: 'positive',  accentCls: 'card-accent-green' },
-        { label: 'YTD Spend',  actual: ytd.spend,  eoy: ytd.projected_eoy_spend,  valCls: 'negative',  accentCls: 'card-accent-red'   },
-        { label: 'YTD Net',    actual: ytd.net,     eoy: ytd.projected_eoy_net,
+        { label: 'YTD Income', cur: ytd.income, eoy: ytd.projected_eoy_income,
+          priVal: pri ? pri.income : null, valCls: 'positive', accentCls: 'card-accent-green', invert: false },
+        { label: 'YTD Spend',  cur: ytd.spend,  eoy: ytd.projected_eoy_spend,
+          priVal: pri ? pri.spend  : null, valCls: 'negative', accentCls: 'card-accent-red',   invert: true  },
+        { label: 'YTD Net',    cur: ytd.net,     eoy: ytd.projected_eoy_net,
+          priVal: pri ? pri.net    : null,
           valCls: ytd.net >= 0 ? 'positive' : 'negative',
-          accentCls: ytd.net >= 0 ? 'card-accent-green' : 'card-accent-red' }
+          accentCls: ytd.net >= 0 ? 'card-accent-green' : 'card-accent-red', invert: false },
     ];
 
-    document.getElementById('ytdCards').innerHTML = cards.map(c => `
+    document.getElementById('ytdCards').innerHTML = cards.map(c => {
+        let yoyHtml = '';
+        if (c.priVal !== null) {
+            const delta  = c.cur - c.priVal;
+            const deltaPct = c.priVal !== 0 ? Math.round((delta / Math.abs(c.priVal)) * 100) : 0;
+            yoyHtml = `
+                <div class="kpi-sub" style="margin-top:2px">
+                    vs ${pri.year} YTD <span style="font-family:'JetBrains Mono',monospace">${fmt(c.priVal)}</span>
+                    &nbsp;${fmtSigned(delta, c.invert)} (${deltaPct >= 0 ? '+' : ''}${deltaPct}%)
+                </div>`;
+        }
+        return `
         <div class="kpi-card ${c.accentCls}">
             <div class="kpi-label">${c.label}</div>
-            <div class="kpi-value ${c.valCls}">${fmt(c.actual)}</div>
-            <div class="kpi-sub">EOY pace: <span style="font-family:'JetBrains Mono',monospace">${fmt(c.eoy)}</span></div>
+            <div class="kpi-value ${c.valCls}">${fmt(c.cur)}</div>
+            ${yoyHtml}
+            <div class="kpi-sub" style="margin-top:4px">EOY pace: <span style="font-family:'JetBrains Mono',monospace">${fmt(c.eoy)}</span></div>
             <div class="ytd-bar"><div class="ytd-bar-fill" style="width:${pct}%"></div></div>
-        </div>
-    `).join('');
+        </div>`;
+    }).join('');
 }
 
 // ─── KPI GROUP TABLES ─────────────────────────────
-function renderGroup(elId, title, metric, data, invertDelta) {
-    const horizons = [
+// YTD mode:      columns = YTD Avg | EOY Pace    final row = "EOY Pace"
+// Trailing mode: columns = Trailing Avg           final row = "Annualized Trend"
+function renderGroup(elId, title, metric, kpis) {
+    if (!kpis || !kpis[metric]) return;
+    const m = kpis[metric];
+
+    const avgRows = [
         { key: 'avg_daily',     label: 'Daily avg'     },
         { key: 'avg_weekly',    label: 'Weekly avg'    },
         { key: 'avg_monthly',   label: 'Monthly avg'   },
         { key: 'avg_quarterly', label: 'Quarterly avg' },
-        { key: 'avg_annual',    label: 'Annual'        },
     ];
 
-    const hasActual    = data.actuals    && data.actuals[metric];
-    const hasProjected = data.projected  && data.projected[metric];
-    if (!hasActual && !hasProjected) return;
-
+    const dot = { income: 'var(--green)', spend: 'var(--red)', net: 'var(--accent)' }[metric];
     let thead, rows;
 
-    if (currentView === 'both' && hasActual && hasProjected) {
+    if (currentMode === 'ytd') {
         thead = `<tr>
             <th>Horizon</th>
-            <th class="text-right">Actual</th>
-            <th class="text-right">Projected</th>
-            <th class="text-right">Δ</th>
+            <th class="text-right">YTD Avg</th>
+            <th class="text-right">EOY Pace</th>
         </tr>`;
-        rows = horizons.map(h => {
-            const av = data.actuals[metric][h.key];
-            const pv = data.projected[metric][h.key];
-            return `<tr>
-                <td style="color:var(--text-secondary)">${h.label}</td>
-                <td class="text-right mono positive">${fmt(av)}</td>
-                <td class="text-right mono" style="color:var(--accent)">${fmt(pv)}</td>
-                <td class="text-right mono">${fmtDelta(pv - av, invertDelta)}</td>
-            </tr>`;
-        }).join('');
-    } else if (hasActual) {
-        thead = `<tr><th>Horizon</th><th class="text-right">Actual</th></tr>`;
-        rows = horizons.map(h => `<tr>
+        rows = avgRows.map(h => `<tr>
             <td style="color:var(--text-secondary)">${h.label}</td>
-            <td class="text-right mono positive">${fmt(data.actuals[metric][h.key])}</td>
+            <td class="text-right mono positive">${fmt(m[h.key])}</td>
+            <td class="text-right mono" style="color:var(--text-muted)">—</td>
         </tr>`).join('');
+        // Final row: YTD Total + EOY Pace (full-year projection)
+        rows += `<tr style="border-top:1px solid var(--border);font-weight:600">
+            <td style="color:var(--text-primary)">EOY Pace</td>
+            <td class="text-right mono" style="color:var(--text-muted)">${fmt(m.ytd_total)}</td>
+            <td class="text-right mono" style="color:var(--accent)">${fmt(m.eoy_pace)}</td>
+        </tr>`;
     } else {
-        thead = `<tr><th>Horizon</th><th class="text-right">Projected</th></tr>`;
-        rows = horizons.map(h => `<tr>
+        thead = `<tr>
+            <th>Horizon</th>
+            <th class="text-right">Trailing Avg</th>
+        </tr>`;
+        rows = avgRows.map(h => `<tr>
             <td style="color:var(--text-secondary)">${h.label}</td>
-            <td class="text-right mono" style="color:var(--accent)">${fmt(data.projected[metric][h.key])}</td>
+            <td class="text-right mono positive">${fmt(m[h.key])}</td>
         </tr>`).join('');
+        // Final row: Annualized Trend (trailing monthly avg × 12)
+        rows += `<tr style="border-top:1px solid var(--border);font-weight:600">
+            <td style="color:var(--text-primary)">Annualized Trend</td>
+            <td class="text-right mono" style="color:var(--accent)">${fmt(m.annualized_trend)}</td>
+        </tr>`;
     }
-
-    const dot = { income: 'var(--green)', spend: 'var(--red)', net: 'var(--accent)' }[metric];
 
     document.getElementById(elId).innerHTML = `
         <div class="section-header" style="margin-bottom:12px">
@@ -210,20 +222,20 @@ function renderGroup(elId, title, metric, data, invertDelta) {
 }
 
 // ─── YEAR COMPARISON ──────────────────────────────
+// Chart only shows Jan through current month for both years (same-date YTD, apples-to-apples).
 function renderCompare(compare) {
     const section = document.getElementById('compareSection');
-    if (!compare.has_prior_year) {
-        section.classList.add('hidden');
-        return;
-    }
+    if (!compare.has_prior_year) { section.classList.add('hidden'); return; }
     section.classList.remove('hidden');
 
     const cur = compare.current_year;
     const pri = compare.prior_year;
-    document.getElementById('compareYearsLabel').textContent  = `${pri.year} vs ${cur.year}`;
-    document.getElementById('compareChartTitle').textContent  = `Monthly Income & Spend — ${pri.year} vs ${cur.year}`;
 
-    // Summary cards
+    document.getElementById('compareYearsLabel').textContent = compare.comparison_label;
+    document.getElementById('compareChartTitle').textContent =
+        `Monthly Income & Spend — ${cur.year} YTD vs ${pri.year} same months`;
+
+    // Summary cards (same-date YTD vs same-date YTD)
     const fields = [
         { label: 'Income', cur: cur.income, pri: pri.income, invert: false },
         { label: 'Spend',  cur: cur.spend,  pri: pri.spend,  invert: true  },
@@ -232,28 +244,25 @@ function renderCompare(compare) {
     document.getElementById('compareSummaryCards').innerHTML = fields.map(f => {
         const delta = f.cur - f.pri;
         const pct   = f.pri !== 0 ? Math.round((delta / Math.abs(f.pri)) * 100) : 0;
-        const cls   = f.invert
-            ? (delta > 0 ? 'negative' : 'positive')
-            : (delta >= 0 ? 'positive' : 'negative');
         return `<div class="kpi-card">
             <div class="kpi-label">${f.label}</div>
             <div style="display:flex;gap:20px;align-items:baseline;flex-wrap:wrap;margin-top:4px">
                 <div>
-                    <div style="font-size:10px;color:var(--text-muted);margin-bottom:1px">${cur.year}</div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-bottom:1px">${cur.year} YTD</div>
                     <div class="kpi-value">${fmt(f.cur)}</div>
                 </div>
                 <div>
-                    <div style="font-size:10px;color:var(--text-muted);margin-bottom:1px">${pri.year}</div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-bottom:1px">${pri.year} YTD</div>
                     <div style="font-family:'JetBrains Mono',monospace;font-size:16px;color:var(--text-secondary)">${fmt(f.pri)}</div>
                 </div>
             </div>
             <div class="kpi-sub" style="margin-top:4px">
-                <span class="${cls}">${delta >= 0 ? '+' : ''}${fmt(delta)} (${pct >= 0 ? '+' : ''}${pct}%)</span> YoY
+                ${fmtSigned(delta, f.invert)} (${pct >= 0 ? '+' : ''}${pct}%) YoY
             </div>
         </div>`;
     }).join('');
 
-    // Chart
+    // Chart: both arrays are already trimmed to Jan–current month by the backend
     if (compareChartInstance) compareChartInstance.destroy();
     compareChartInstance = new Chart(document.getElementById('compareChart'), {
         type: 'bar',
@@ -280,13 +289,30 @@ function renderCompare(compare) {
     });
 }
 
-// ─── METHODOLOGY ──────────────────────────────────
-function renderMethodology(m) {
-    document.getElementById('methodologyBody').innerHTML = `
-        <p style="margin-bottom:6px"><strong>Daily &amp; Weekly projections</strong> — ${m.daily_weekly}</p>
-        <p><strong>Monthly, Quarterly &amp; Annual projections</strong> — ${m.monthly_quarterly_annual}</p>
-        <p style="margin-top:8px;color:var(--text-muted);font-size:12px">Projection logic is modular and can be upgraded to include seasonal weighting or ML-based forecasting.</p>
-    `;
+// ─── METHODOLOGY NOTE ─────────────────────────────
+function renderMethodologyNote(data) {
+    const kpis = data.table_kpis;
+    let body;
+    if (currentMode === 'ytd') {
+        const meta = kpis && kpis.meta ? kpis.meta : {};
+        body = `
+            <p style="margin-bottom:6px"><strong>YTD View</strong> — All averages derived from year-to-date totals divided by elapsed calendar time.</p>
+            <p style="margin-bottom:4px">Daily avg: YTD total ÷ ${meta.days_elapsed || '—'} elapsed days &nbsp;·&nbsp;
+               Weekly avg: ÷ ${meta.elapsed_weeks || '—'} weeks &nbsp;·&nbsp;
+               Monthly avg: ÷ ${meta.elapsed_months ? meta.elapsed_months.toFixed(2) : '—'} months &nbsp;·&nbsp;
+               Quarterly avg: ÷ ${meta.elapsed_quarters ? meta.elapsed_quarters.toFixed(2) : '—'} quarters</p>
+            <p>EOY Pace: YTD total ÷ ${meta.days_elapsed || '—'} days × ${meta.days_in_year || 365}</p>`;
+    } else {
+        const meta = kpis && kpis.meta ? kpis.meta : {};
+        body = `
+            <p style="margin-bottom:6px"><strong>Trailing View</strong> — All averages from rolling recent windows, using calendar days.</p>
+            <p style="margin-bottom:4px">Daily avg: sum of trailing ${meta.trailing_daily_days || 28} calendar days ÷ ${meta.trailing_daily_days || 28} &nbsp;·&nbsp;
+               Weekly avg: avg of trailing ${meta.trailing_weekly_weeks || 4} complete weeks &nbsp;·&nbsp;
+               Monthly avg: avg of trailing ${meta.trailing_monthly_months || 3} complete months</p>
+            <p>Annualized Trend: trailing monthly avg × 12</p>`;
+    }
+    document.getElementById('methodologyBody').innerHTML =
+        body + `<p style="margin-top:8px;color:var(--text-muted);font-size:12px">Switch modes using the toggle above to compare YTD pace vs recent run-rate.</p>`;
 }
 
 function toggleMethodology() {
