@@ -198,6 +198,16 @@ input:focus,select:focus { outline:none; border-color:var(--accent); }
 .empty-state a { color:var(--accent); }
 .section-title { font-size:16px; font-weight:700; margin:20px 0 12px; }
 .card-inactive { opacity:0.5; }
+.hidden { display:none; }
+
+/* ─── KPI PAGE ─────────────────────────── */
+.kpi-group { margin-bottom:16px; }
+.kpi-table th { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); padding:8px 12px; border-bottom:1px solid var(--border); text-align:left; }
+.kpi-table td { padding:10px 12px; border-bottom:1px solid rgba(37,41,64,0.5); font-size:13px; }
+.kpi-table td.text-right { text-align:right; }
+.kpi-table tbody tr:last-child td { border-bottom:none; }
+.ytd-bar { margin-top:8px; height:3px; background:var(--border); border-radius:2px; overflow:hidden; }
+.ytd-bar-fill { height:100%; background:var(--accent); border-radius:2px; }
 
 /* ─── WEEKLY: WEEK LIST ────────────────── */
 .week-list-header { display:flex; justify-content:space-between; padding:10px 16px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); border-bottom:1px solid var(--border); margin-bottom:4px; }

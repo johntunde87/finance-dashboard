@@ -36,6 +36,9 @@
             <a href="{{ url_for('monthly') }}" class="nav-link {% if request.endpoint == 'monthly' %}active{% endif %}" onclick="document.body.classList.remove('nav-open')">
                 <span class="nav-icon">▦</span> Monthly
             </a>
+            <a href="{{ url_for('kpis') }}" class="nav-link {% if request.endpoint == 'kpis' %}active{% endif %}" onclick="document.body.classList.remove('nav-open')">
+                <span class="nav-icon">◈</span> KPIs
+            </a>
             <a href="{{ url_for('transactions') }}" class="nav-link {% if request.endpoint == 'transactions' %}active{% endif %}" onclick="document.body.classList.remove('nav-open')">
                 <span class="nav-icon">☰</span> Transactions
             </a>

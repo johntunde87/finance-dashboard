@@ -1,0 +1,302 @@
+{% extends "base.html" %}
+{% block title %}KPI Dashboard — MoneyMap{% endblock %}
+
+{% block content %}
+<div id="kpiApp">
+    <div class="page-header">
+        <h1>KPI Dashboard</h1>
+    </div>
+
+    <!-- View toggle -->
+    <div class="mode-bar" id="viewBar">
+        <button class="mode-btn active" data-view="both"      onclick="setView('both')">Actual + Projected</button>
+        <button class="mode-btn"        data-view="actual"    onclick="setView('actual')">Actual Only</button>
+        <button class="mode-btn"        data-view="projected" onclick="setView('projected')">Projected Only</button>
+    </div>
+
+    <div id="kpiLoading" class="empty-state">Loading...</div>
+    <div id="kpiEmpty"   class="empty-state hidden">No transaction data yet. <a href="/upload">Upload a CSV</a> to get started.</div>
+
+    <div id="kpiContent" class="hidden">
+
+        <!-- ── YTD Summary ───────────────────────────────────── -->
+        <div class="section" style="margin-bottom:16px">
+            <div class="section-header">
+                <h2>Year to Date &nbsp;<span id="ytdYearLabel" style="color:var(--text-muted);font-weight:400;font-size:14px"></span></h2>
+                <span id="ytdDaysLabel" style="font-size:12px;color:var(--text-muted)"></span>
+            </div>
+            <div class="kpi-grid" id="ytdCards"></div>
+        </div>
+
+        <!-- ── Income KPIs ──────────────────────────────────── -->
+        <div class="section kpi-group" id="incomeGroup"></div>
+
+        <!-- ── Spending KPIs ────────────────────────────────── -->
+        <div class="section kpi-group" id="spendGroup"></div>
+
+        <!-- ── Net Savings KPIs ─────────────────────────────── -->
+        <div class="section kpi-group" id="netGroup"></div>
+
+        <!-- ── Year over Year ───────────────────────────────── -->
+        <div id="compareSection" class="section hidden" style="margin-bottom:16px">
+            <div class="section-header">
+                <h2>Year over Year</h2>
+                <span id="compareYearsLabel" style="font-size:12px;color:var(--text-muted)"></span>
+            </div>
+            <div class="kpi-grid" id="compareSummaryCards" style="margin-bottom:20px"></div>
+            <div class="chart-card" style="margin-bottom:0">
+                <h3 id="compareChartTitle"></h3>
+                <canvas id="compareChart" style="height:220px;max-height:220px"></canvas>
+            </div>
+        </div>
+
+        <!-- ── Methodology note ─────────────────────────────── -->
+        <div class="section" style="margin-bottom:0">
+            <div class="section-header" style="cursor:pointer;margin-bottom:0" onclick="toggleMethodology()">
+                <h2 style="font-size:13px;color:var(--text-muted);font-weight:500">ℹ Projection methodology</h2>
+                <span id="methodologyToggle" style="font-size:12px;color:var(--accent)">Show</span>
+            </div>
+            <div id="methodologyBody" class="hidden" style="padding-top:12px;font-size:13px;color:var(--text-secondary);line-height:1.7"></div>
+        </div>
+
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ─── STATE ────────────────────────────────────────
+let currentView = 'both';
+let compareChartInstance = null;
+
+// ─── INIT ─────────────────────────────────────────
+async function init() {
+    await loadKPIs();
+}
+
+function setView(v) {
+    currentView = v;
+    document.querySelectorAll('#viewBar .mode-btn').forEach(b => b.classList.toggle('active', b.dataset.view === v));
+    loadKPIs();
+}
+
+async function loadKPIs() {
+    document.getElementById('kpiLoading').classList.remove('hidden');
+    document.getElementById('kpiContent').classList.add('hidden');
+    document.getElementById('kpiEmpty').classList.add('hidden');
+
+    const res  = await fetch(`/api/kpis?view=${currentView}`);
+    const data = await res.json();
+
+    document.getElementById('kpiLoading').classList.add('hidden');
+
+    if (!data.has_data) {
+        document.getElementById('kpiEmpty').classList.remove('hidden');
+        return;
+    }
+
+    document.getElementById('kpiContent').classList.remove('hidden');
+    renderYTD(data.ytd);
+    renderGroup('incomeGroup', 'Income',       'income', data, false);
+    renderGroup('spendGroup',  'Spending',     'spend',  data, true);
+    renderGroup('netGroup',    'Net Savings',  'net',    data, false);
+    renderCompare(data.compare_years);
+    renderMethodology(data.methodology);
+}
+
+// ─── FORMAT HELPERS ───────────────────────────────
+function fmt(v) {
+    return '$' + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+
+function fmtDelta(d, invertColor) {
+    // invertColor=true for spend: higher projected spend than actual is bad (red)
+    const sign = d >= 0 ? '+' : '';
+    const cls  = invertColor
+        ? (d > 0 ? 'negative' : 'positive')
+        : (d >= 0 ? 'positive' : 'negative');
+    return `<span class="${cls}">${sign}${fmt(d)}</span>`;
+}
+
+// ─── YTD ──────────────────────────────────────────
+function renderYTD(ytd) {
+    document.getElementById('ytdYearLabel').textContent = ytd.year;
+    const total = ytd.days_elapsed + ytd.days_remaining;
+    document.getElementById('ytdDaysLabel').textContent =
+        `Day ${ytd.days_elapsed} of ${total} · ${ytd.days_remaining} days remaining`;
+
+    const pct  = Math.round((ytd.days_elapsed / total) * 100);
+    const cards = [
+        { label: 'YTD Income', actual: ytd.income, eoy: ytd.projected_eoy_income, valCls: 'positive',  accentCls: 'card-accent-green' },
+        { label: 'YTD Spend',  actual: ytd.spend,  eoy: ytd.projected_eoy_spend,  valCls: 'negative',  accentCls: 'card-accent-red'   },
+        { label: 'YTD Net',    actual: ytd.net,     eoy: ytd.projected_eoy_net,
+          valCls: ytd.net >= 0 ? 'positive' : 'negative',
+          accentCls: ytd.net >= 0 ? 'card-accent-green' : 'card-accent-red' }
+    ];
+
+    document.getElementById('ytdCards').innerHTML = cards.map(c => `
+        <div class="kpi-card ${c.accentCls}">
+            <div class="kpi-label">${c.label}</div>
+            <div class="kpi-value ${c.valCls}">${fmt(c.actual)}</div>
+            <div class="kpi-sub">EOY pace: <span style="font-family:'JetBrains Mono',monospace">${fmt(c.eoy)}</span></div>
+            <div class="ytd-bar"><div class="ytd-bar-fill" style="width:${pct}%"></div></div>
+        </div>
+    `).join('');
+}
+
+// ─── KPI GROUP TABLES ─────────────────────────────
+function renderGroup(elId, title, metric, data, invertDelta) {
+    const horizons = [
+        { key: 'avg_daily',     label: 'Daily avg'     },
+        { key: 'avg_weekly',    label: 'Weekly avg'    },
+        { key: 'avg_monthly',   label: 'Monthly avg'   },
+        { key: 'avg_quarterly', label: 'Quarterly avg' },
+        { key: 'avg_annual',    label: 'Annual'        },
+    ];
+
+    const hasActual    = data.actuals    && data.actuals[metric];
+    const hasProjected = data.projected  && data.projected[metric];
+    if (!hasActual && !hasProjected) return;
+
+    let thead, rows;
+
+    if (currentView === 'both' && hasActual && hasProjected) {
+        thead = `<tr>
+            <th>Horizon</th>
+            <th class="text-right">Actual</th>
+            <th class="text-right">Projected</th>
+            <th class="text-right">Δ</th>
+        </tr>`;
+        rows = horizons.map(h => {
+            const av = data.actuals[metric][h.key];
+            const pv = data.projected[metric][h.key];
+            return `<tr>
+                <td style="color:var(--text-secondary)">${h.label}</td>
+                <td class="text-right mono positive">${fmt(av)}</td>
+                <td class="text-right mono" style="color:var(--accent)">${fmt(pv)}</td>
+                <td class="text-right mono">${fmtDelta(pv - av, invertDelta)}</td>
+            </tr>`;
+        }).join('');
+    } else if (hasActual) {
+        thead = `<tr><th>Horizon</th><th class="text-right">Actual</th></tr>`;
+        rows = horizons.map(h => `<tr>
+            <td style="color:var(--text-secondary)">${h.label}</td>
+            <td class="text-right mono positive">${fmt(data.actuals[metric][h.key])}</td>
+        </tr>`).join('');
+    } else {
+        thead = `<tr><th>Horizon</th><th class="text-right">Projected</th></tr>`;
+        rows = horizons.map(h => `<tr>
+            <td style="color:var(--text-secondary)">${h.label}</td>
+            <td class="text-right mono" style="color:var(--accent)">${fmt(data.projected[metric][h.key])}</td>
+        </tr>`).join('');
+    }
+
+    const dot = { income: 'var(--green)', spend: 'var(--red)', net: 'var(--accent)' }[metric];
+
+    document.getElementById(elId).innerHTML = `
+        <div class="section-header" style="margin-bottom:12px">
+            <h2 style="display:flex;align-items:center;gap:8px">
+                <span style="width:9px;height:9px;border-radius:50%;background:${dot};display:inline-block;flex-shrink:0"></span>
+                ${title} KPIs
+            </h2>
+        </div>
+        <div class="table-wrapper">
+            <table class="txn-table kpi-table">
+                <thead>${thead}</thead>
+                <tbody>${rows}</tbody>
+            </table>
+        </div>
+    `;
+}
+
+// ─── YEAR COMPARISON ──────────────────────────────
+function renderCompare(compare) {
+    const section = document.getElementById('compareSection');
+    if (!compare.has_prior_year) {
+        section.classList.add('hidden');
+        return;
+    }
+    section.classList.remove('hidden');
+
+    const cur = compare.current_year;
+    const pri = compare.prior_year;
+    document.getElementById('compareYearsLabel').textContent  = `${pri.year} vs ${cur.year}`;
+    document.getElementById('compareChartTitle').textContent  = `Monthly Income & Spend — ${pri.year} vs ${cur.year}`;
+
+    // Summary cards
+    const fields = [
+        { label: 'Income', cur: cur.income, pri: pri.income, invert: false },
+        { label: 'Spend',  cur: cur.spend,  pri: pri.spend,  invert: true  },
+        { label: 'Net',    cur: cur.net,    pri: pri.net,    invert: false  },
+    ];
+    document.getElementById('compareSummaryCards').innerHTML = fields.map(f => {
+        const delta = f.cur - f.pri;
+        const pct   = f.pri !== 0 ? Math.round((delta / Math.abs(f.pri)) * 100) : 0;
+        const cls   = f.invert
+            ? (delta > 0 ? 'negative' : 'positive')
+            : (delta >= 0 ? 'positive' : 'negative');
+        return `<div class="kpi-card">
+            <div class="kpi-label">${f.label}</div>
+            <div style="display:flex;gap:20px;align-items:baseline;flex-wrap:wrap;margin-top:4px">
+                <div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-bottom:1px">${cur.year}</div>
+                    <div class="kpi-value">${fmt(f.cur)}</div>
+                </div>
+                <div>
+                    <div style="font-size:10px;color:var(--text-muted);margin-bottom:1px">${pri.year}</div>
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:16px;color:var(--text-secondary)">${fmt(f.pri)}</div>
+                </div>
+            </div>
+            <div class="kpi-sub" style="margin-top:4px">
+                <span class="${cls}">${delta >= 0 ? '+' : ''}${fmt(delta)} (${pct >= 0 ? '+' : ''}${pct}%)</span> YoY
+            </div>
+        </div>`;
+    }).join('');
+
+    // Chart
+    if (compareChartInstance) compareChartInstance.destroy();
+    compareChartInstance = new Chart(document.getElementById('compareChart'), {
+        type: 'bar',
+        data: {
+            labels: cur.by_month.map(m => m.label),
+            datasets: [
+                { label: `${cur.year} Income`, data: cur.by_month.map(m => m.income), backgroundColor: 'rgba(52,211,153,0.8)',  borderRadius: 3, barPercentage: 0.45, categoryPercentage: 0.85 },
+                { label: `${pri.year} Income`, data: pri.by_month.map(m => m.income), backgroundColor: 'rgba(52,211,153,0.25)', borderRadius: 3, barPercentage: 0.45, categoryPercentage: 0.85 },
+                { label: `${cur.year} Spend`,  data: cur.by_month.map(m => m.spend),  backgroundColor: 'rgba(99,102,241,0.8)',  borderRadius: 3, barPercentage: 0.45, categoryPercentage: 0.85 },
+                { label: `${pri.year} Spend`,  data: pri.by_month.map(m => m.spend),  backgroundColor: 'rgba(99,102,241,0.25)', borderRadius: 3, barPercentage: 0.45, categoryPercentage: 0.85 },
+            ]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: '#94a3b8', font: { family: 'DM Sans', size: 11 }, boxWidth: 12 } },
+                tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: $${ctx.parsed.y.toLocaleString(undefined, {minimumFractionDigits: 2})}` } }
+            },
+            scales: {
+                x: { ticks: { color: '#64748b', font: { size: 11 } }, grid: { display: false } },
+                y: { ticks: { color: '#64748b', callback: v => '$' + v.toLocaleString(), font: { size: 10 } }, grid: { color: 'rgba(148,163,184,0.08)' }, beginAtZero: true }
+            }
+        }
+    });
+}
+
+// ─── METHODOLOGY ──────────────────────────────────
+function renderMethodology(m) {
+    document.getElementById('methodologyBody').innerHTML = `
+        <p style="margin-bottom:6px"><strong>Daily &amp; Weekly projections</strong> — ${m.daily_weekly}</p>
+        <p><strong>Monthly, Quarterly &amp; Annual projections</strong> — ${m.monthly_quarterly_annual}</p>
+        <p style="margin-top:8px;color:var(--text-muted);font-size:12px">Projection logic is modular and can be upgraded to include seasonal weighting or ML-based forecasting.</p>
+    `;
+}
+
+function toggleMethodology() {
+    const body   = document.getElementById('methodologyBody');
+    const toggle = document.getElementById('methodologyToggle');
+    body.classList.toggle('hidden');
+    toggle.textContent = body.classList.contains('hidden') ? 'Show' : 'Hide';
+}
+
+// ─── BOOT ─────────────────────────────────────────
+init();
+</script>
+{% endblock %}
