@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — MoneyMap{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h1>Dashboard</h1>
+    <div class="period-selector">
+        <a href="?period=month" class="period-btn {% if period == 'month' %}active{% endif %}">Month</a>
+        <a href="?period=quarter" class="period-btn {% if period == 'quarter' %}active{% endif %}">Quarter</a>
+        <a href="?period=year" class="period-btn {% if period == 'year' %}active{% endif %}">Year</a>
+        <a href="?period=all" class="period-btn {% if period == 'all' %}active{% endif %}">All</a>
+    </div>
+</div>
+<div class="kpi-grid">
+    <div class="kpi-card"><div class="kpi-label">Current Balance</div>
+        <div class="kpi-value {% if stats.current_balance >= 0 %}positive{% else %}negative{% endif %}">${{ "%.2f"|format(stats.current_balance) }}</div>
+        <div class="kpi-sub">Last updated from CSV</div></div>
+    <div class="kpi-card"><div class="kpi-label">Total Income</div>
+        <div class="kpi-value positive">${{ "%.2f"|format(stats.total_income) }}</div>
+        <div class="kpi-sub">{{ stats.txn_count }} transactions</div></div>
+    <div class="kpi-card"><div class="kpi-label">Total Expenses</div>
+        <div class="kpi-value negative">${{ "%.2f"|format(stats.total_expenses) }}</div>
+        <div class="kpi-sub">${{ "%.2f"|format(stats.daily_avg_spend) }}/day avg</div></div>
+    <div class="kpi-card {% if stats.net_savings >= 0 %}card-accent-green{% else %}card-accent-red{% endif %}">
+        <div class="kpi-label">Net Savings</div>
+        <div class="kpi-value {% if stats.net_savings >= 0 %}positive{% else %}negative{% endif %}">${{ "%.2f"|format(stats.net_savings) }}</div>
+        <div class="kpi-sub">Income − Expenses</div></div>
+</div>
+{% if goals %}
+<div class="section">
+    <div class="section-header"><h2>Savings Goals</h2><a href="{{ url_for('goals') }}" class="link-btn">Manage →</a></div>
+    <div class="goals-grid">
+    {% for goal in goals %}
+    <div class="goal-card">
+        <div class="goal-header"><span class="goal-name">{{ goal.name }}</span>
+            {% if goal.get('status') == 'on_track' %}<span class="status-badge badge-green">On Track</span>
+            {% elif goal.get('status') == 'behind' %}<span class="status-badge badge-red">Behind</span>
+            {% elif goal.get('status') == 'complete' %}<span class="status-badge badge-gold">Complete!</span>{% endif %}
+        </div>
+        <div class="progress-container"><div class="progress-bar"><div class="progress-fill" style="width:{{ goal.progress_pct }}%"></div></div>
+            <div class="progress-text"><span>${{ "%.0f"|format(goal.current_amount) }} / ${{ "%.0f"|format(goal.target_amount) }}</span><span>{{ goal.progress_pct }}%</span></div></div>
+        {% if goal.monthly_needed %}
+        <div class="goal-projection">
+            <div class="projection-item"><span class="proj-label">Need/mo</span><span class="proj-value">${{ "%.0f"|format(goal.monthly_needed) }}</span></div>
+            {% if goal.projected_monthly_income %}<div class="projection-item"><span class="proj-label">Target income/mo</span><span class="proj-value">${{ "%.0f"|format(goal.projected_monthly_income) }}</span></div>{% endif %}
+            {% if goal.months_left %}<div class="projection-item"><span class="proj-label">Months left</span><span class="proj-value">{{ goal.months_left }}</span></div>{% endif %}
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+    </div>
+</div>
+{% endif %}
+<div class="charts-grid">
+    <div class="chart-card"><h3>Income vs Expenses</h3><canvas id="trendChart"></canvas></div>
+    <div class="chart-card"><h3>Spending by Category</h3><canvas id="categoryChart"></canvas></div>
+</div>
+<div class="bottom-grid">
+    <div class="section">
+        <div class="section-header"><h2>Recent Transactions</h2><a href="{{ url_for('transactions') }}" class="link-btn">View All →</a></div>
+        {% if uncategorized_count > 0 %}<div class="alert alert-warning">{{ uncategorized_count }} uncategorized. <a href="{{ url_for('transactions', category='Uncategorized') }}">Review →</a></div>{% endif %}
+        <div class="table-wrapper"><table class="txn-table"><thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="text-right">Amount</th></tr></thead>
+        <tbody>{% for txn in recent %}<tr>
+            <td class="mono">{{ txn.posting_date }}</td><td class="desc-cell" title="{{ txn.description }}">{{ txn.description[:50] }}</td>
+            <td><span class="cat-badge">{{ txn.category }}</span></td>
+            <td class="text-right mono {% if txn.amount >= 0 %}positive{% else %}negative{% endif %}">{{ "$%.2f"|format(txn.amount) }}</td>
+        </tr>{% endfor %}</tbody></table></div>
+    </div>
+    <div class="section">
+        <div class="section-header"><h2>Recurring Expenses</h2></div>
+        <div class="table-wrapper"><table class="txn-table"><thead><tr><th>Description</th><th>Category</th><th class="text-right">Avg</th><th class="text-right">Total</th><th class="text-center">#</th></tr></thead>
+        <tbody>{% for r in recurring[:10] %}<tr>
+            <td class="desc-cell" title="{{ r.description }}">{{ r.description[:40] }}</td>
+            <td><span class="cat-badge">{{ r.category }}</span></td>
+            <td class="text-right mono">${{ "%.2f"|format(r.avg_amount) }}</td>
+            <td class="text-right mono negative">${{ "%.2f"|format(r.total_amount) }}</td>
+            <td class="text-center">{{ r.occurrences }}</td>
+        </tr>{% endfor %}</tbody></table></div>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const trendData = {{ trend|safe }};
+if (trendData.length > 0) {
+    new Chart(document.getElementById('trendChart'), {
+        type: 'bar', data: { labels: trendData.map(d => d.month), datasets: [
+            { label: 'Income', data: trendData.map(d => d.income), backgroundColor: 'rgba(52,211,153,0.8)', borderRadius: 4 },
+            { label: 'Expenses', data: trendData.map(d => d.expenses), backgroundColor: 'rgba(248,113,113,0.8)', borderRadius: 4 }
+        ]}, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#94a3b8', font: { family: 'DM Sans' } } } },
+            scales: { x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(148,163,184,0.08)' } },
+                y: { ticks: { color: '#64748b', callback: v => '$'+v.toLocaleString() }, grid: { color: 'rgba(148,163,184,0.08)' } } } }
+    });
+}
+const catData = {{ categories|tojson }};
+if (catData.length > 0) {
+    const pal = ['#6366f1','#f59e0b','#10b981','#ef4444','#8b5cf6','#ec4899','#06b6d4','#f97316','#14b8a6','#e11d48','#3b82f6','#a855f7','#eab308','#22c55e','#64748b'];
+    new Chart(document.getElementById('categoryChart'), {
+        type: 'doughnut', data: { labels: catData.map(c => c.category), datasets: [{ data: catData.map(c => c.total), backgroundColor: pal.slice(0, catData.length), borderWidth: 0, hoverOffset: 6 }] },
+        options: { responsive: true, maintainAspectRatio: false, cutout: '65%', plugins: { legend: { position: 'right', labels: { color: '#94a3b8', font: { family: 'DM Sans', size: 11 }, padding: 10, usePointStyle: true, pointStyleWidth: 8 } },
+            tooltip: { callbacks: { label: ctx => ' $'+ctx.parsed.toLocaleString(undefined,{minimumFractionDigits:2}) } } } }
+    });
+}
+</script>
+{% endblock %}

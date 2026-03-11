@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Savings Goals — MoneyMap{% endblock %}
+{% block content %}
+<div class="page-header"><h1>Savings Goals</h1></div>
+<div class="card form-card">
+    <h3>Create New Goal</h3>
+    <form method="POST" class="goal-form">
+        <div class="form-grid">
+            <div class="form-group"><label>Goal Name</label><input type="text" name="name" placeholder="e.g., Emergency Fund, Travel..." required></div>
+            <div class="form-group"><label>Target Amount ($)</label><input type="number" name="target_amount" step="0.01" min="1" placeholder="2000.00" required></div>
+            <div class="form-group"><label>Current Amount ($)</label><input type="number" name="current_amount" step="0.01" min="0" value="0"></div>
+            <div class="form-group"><label>Target Date</label><input type="date" name="target_date"></div>
+            <div class="form-group"><label>Type</label><select name="goal_type"><option value="monthly_savings">Monthly Savings</option><option value="travel">Travel</option><option value="purchase">Specific Purchase</option><option value="emergency">Emergency Fund</option><option value="custom">Custom</option></select></div>
+            <div class="form-group form-actions"><button type="submit" class="btn btn-primary">Create Goal</button></div>
+        </div>
+    </form>
+</div>
+{% for goal in goals %}
+<div class="card goal-detail-card {% if not goal.is_active %}card-inactive{% endif %}">
+    <div class="goal-detail-header">
+        <div><h3>{{ goal.name }}</h3><span class="goal-type-badge">{{ goal.goal_type.replace('_',' ').title() }}</span>
+            {% if goal.get('status') == 'on_track' %}<span class="status-badge badge-green">On Track</span>
+            {% elif goal.get('status') == 'behind' %}<span class="status-badge badge-red">Behind</span>
+            {% elif goal.get('status') == 'complete' %}<span class="status-badge badge-gold">Complete!</span>{% endif %}</div>
+        <form method="POST" action="{{ url_for('delete_goal', goal_id=goal.id) }}" onsubmit="return confirm('Delete this goal?')"><button type="submit" class="btn btn-ghost btn-sm">Delete</button></form>
+    </div>
+    <div class="progress-container progress-lg"><div class="progress-bar"><div class="progress-fill {% if goal.progress_pct >= 100 %}fill-complete{% elif goal.progress_pct >= 50 %}fill-good{% endif %}" style="width:{{ goal.progress_pct }}%"></div></div>
+        <div class="progress-text"><span>${{ "%.2f"|format(goal.current_amount) }} of ${{ "%.2f"|format(goal.target_amount) }}</span><span class="progress-pct">{{ goal.progress_pct }}%</span></div></div>
+    <form method="POST" action="{{ url_for('update_goal', goal_id=goal.id) }}" class="update-amount-form">
+        <input type="number" name="current_amount" step="0.01" value="{{ goal.current_amount }}" class="inline-input"><button type="submit" class="btn btn-sm btn-primary">Update</button></form>
+    {% if goal.monthly_needed is not none %}
+    <div class="projections-grid">
+        <div class="projection-card"><div class="proj-period">Monthly</div><div class="proj-detail"><span class="proj-label">Savings needed</span><span class="proj-value">${{ "%.0f"|format(goal.monthly_needed) }}</span></div>
+            {% if goal.projected_monthly_income %}<div class="proj-detail"><span class="proj-label">Income target</span><span class="proj-value highlight">${{ "%.0f"|format(goal.projected_monthly_income) }}</span></div>{% endif %}</div>
+        {% if goal.get('quarterly_needed') %}<div class="projection-card"><div class="proj-period">Quarterly</div><div class="proj-detail"><span class="proj-label">Savings needed</span><span class="proj-value">${{ "%.0f"|format(goal.quarterly_needed) }}</span></div>
+            {% if goal.get('projected_quarterly_income') %}<div class="proj-detail"><span class="proj-label">Income target</span><span class="proj-value highlight">${{ "%.0f"|format(goal.projected_quarterly_income) }}</span></div>{% endif %}</div>{% endif %}
+        {% if goal.get('yearly_needed') %}<div class="projection-card"><div class="proj-period">Yearly</div><div class="proj-detail"><span class="proj-label">Savings needed</span><span class="proj-value">${{ "%.0f"|format(goal.yearly_needed) }}</span></div>
+            {% if goal.get('projected_yearly_income') %}<div class="proj-detail"><span class="proj-label">Income target</span><span class="proj-value highlight">${{ "%.0f"|format(goal.projected_yearly_income) }}</span></div>{% endif %}</div>{% endif %}
+    </div>
+    {% if goal.months_left %}<div class="goal-timeline">{{ goal.months_left }} month{{ 's' if goal.months_left != 1 }} remaining · ${{ "%.2f"|format(goal.remaining) }} to go{% if goal.target_date %} · Target: {{ goal.target_date }}{% endif %}</div>{% endif %}
+    {% endif %}
+</div>
+{% endfor %}
+{% if not goals %}<div class="empty-state"><p>No savings goals yet. Create one above to start tracking!</p></div>{% endif %}
+{% endblock %}

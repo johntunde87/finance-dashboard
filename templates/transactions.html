@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Transactions — MoneyMap{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h1>Transactions</h1>
+    <div class="header-stats">
+        <span class="stat-chip positive">↑ ${{ "%.2f"|format(filtered_income) }}</span>
+        <span class="stat-chip negative">↓ ${{ "%.2f"|format(filtered_expenses) }}</span>
+        <span class="stat-chip">{{ result_count }}</span>
+    </div>
+</div>
+<div class="filters-panel">
+    <form method="GET" class="filters-form">
+        <div class="filter-row">
+            <div class="filter-group"><label>Search</label><input type="text" name="search" value="{{ filters.search }}" placeholder="Description..."></div>
+            <div class="filter-group"><label>Category</label><select name="category"><option value="">All</option>{% for cat in categories %}<option value="{{ cat }}" {% if filters.category == cat %}selected{% endif %}>{{ cat }}</option>{% endfor %}</select></div>
+            <div class="filter-group"><label>Type</label><select name="type"><option value="">All</option><option value="income" {% if filters.type == 'income' %}selected{% endif %}>Income</option><option value="expense" {% if filters.type == 'expense' %}selected{% endif %}>Expense</option></select></div>
+            <div class="filter-group"><label>Sort</label><select name="sort"><option value="date_desc" {% if filters.sort == 'date_desc' %}selected{% endif %}>Newest</option><option value="date_asc" {% if filters.sort == 'date_asc' %}selected{% endif %}>Oldest</option><option value="amount_desc" {% if filters.sort == 'amount_desc' %}selected{% endif %}>Largest</option><option value="amount_asc" {% if filters.sort == 'amount_asc' %}selected{% endif %}>Smallest</option></select></div>
+        </div>
+        <div class="filter-row">
+            <div class="filter-group"><label>From</label><input type="date" name="start_date" value="{{ filters.start_date }}"></div>
+            <div class="filter-group"><label>To</label><input type="date" name="end_date" value="{{ filters.end_date }}"></div>
+            <div class="filter-group"><label>Min $</label><input type="number" name="min_amount" value="{{ filters.min_amount }}" step="0.01"></div>
+            <div class="filter-group"><label>Max $</label><input type="number" name="max_amount" value="{{ filters.max_amount }}" step="0.01"></div>
+            <div class="filter-group filter-actions"><button type="submit" class="btn btn-primary">Filter</button><a href="{{ url_for('transactions') }}" class="btn btn-ghost">Clear</a></div>
+        </div>
+    </form>
+</div>
+
+<!-- Desktop table -->
+<div class="table-wrapper desktop-only">
+    <table class="txn-table txn-table-full"><thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Tags</th><th class="text-right">Amount</th><th class="text-right">Balance</th></tr></thead>
+    <tbody>{% for txn in transactions %}<tr class="{% if txn.category == 'Uncategorized' %}row-uncategorized{% endif %}">
+        <td class="mono">{{ txn.posting_date }}</td><td class="desc-cell" title="{{ txn.description }}">{{ txn.description[:55] }}</td>
+        <td><form method="POST" action="{{ url_for('update_transaction', txn_id=txn.id) }}" class="inline-form"><select name="category" onchange="this.form.submit()" class="inline-select">{% for cat in categories %}<option value="{{ cat }}" {% if txn.category == cat %}selected{% endif %}>{{ cat }}</option>{% endfor %}</select></form></td>
+        <td><form method="POST" action="{{ url_for('update_transaction', txn_id=txn.id) }}" class="inline-form"><input type="hidden" name="category" value="{{ txn.category }}"><input type="text" name="tags" value="{{ txn.tags }}" placeholder="tag..." class="inline-input" onchange="this.form.submit()"></form></td>
+        <td class="text-right mono {% if txn.amount >= 0 %}positive{% else %}negative{% endif %}">{{ "$%.2f"|format(txn.amount) }}</td>
+        <td class="text-right mono">{% if txn.balance %}${{ "%.2f"|format(txn.balance) }}{% else %}—{% endif %}</td>
+    </tr>{% endfor %}</tbody></table>
+</div>
+
+<!-- Mobile cards -->
+<div class="mobile-only">
+    {% for txn in transactions %}
+    <div class="txn-card">
+        <div class="txn-card-top">
+            <span class="txn-date">{{ txn.posting_date }}</span>
+            <span class="txn-amount {% if txn.amount >= 0 %}positive{% else %}negative{% endif %}">{{ "$%.2f"|format(txn.amount) }}</span>
+        </div>
+        <div class="txn-card-desc">{{ txn.description[:60] }}</div>
+        <div class="txn-card-bottom"><span class="cat-badge">{{ txn.category }}</span>{% if txn.tags %}<span class="tag-badge">{{ txn.tags }}</span>{% endif %}</div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if not transactions %}<div class="empty-state"><p>No transactions found. <a href="{{ url_for('upload') }}">Upload a CSV</a> to get started.</p></div>{% endif %}
+{% endblock %}

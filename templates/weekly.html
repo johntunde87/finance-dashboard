@@ -1,0 +1,394 @@
+{% extends "base.html" %}
+{% block title %}Weekly Analytics — MoneyMap{% endblock %}
+
+{% block content %}
+<div id="weeklyApp">
+    <!-- WEEK SELECTION VIEW -->
+    <div id="weekList" class="view-active">
+        <div class="page-header">
+            <h1>Weekly Analytics</h1>
+        </div>
+
+        <!-- Mode selector for week list -->
+        <div class="mode-bar">
+            <button class="mode-btn active" data-mode="spend" onclick="setListMode('spend')">Spend</button>
+            <button class="mode-btn" data-mode="income" onclick="setListMode('income')">Income</button>
+            <button class="mode-btn" data-mode="all" onclick="setListMode('all')">Income + Spend</button>
+        </div>
+
+        <!-- Category filter toggle -->
+        <div class="category-filter-bar" id="listCatFilter">
+            <button class="filter-toggle-btn" onclick="toggleCategoryPanel('listCatPanel')">
+                Filter Categories <span class="filter-count" id="listFilterCount"></span>
+            </button>
+            <div class="category-panel hidden" id="listCatPanel">
+                <div class="cat-panel-header">
+                    <button class="cat-action" onclick="selectAllCats('listCatPanel')">All</button>
+                    <button class="cat-action" onclick="selectNoneCats('listCatPanel')">None</button>
+                </div>
+                <div class="cat-checkboxes" id="listCatCheckboxes"></div>
+                <button class="btn btn-primary btn-sm" onclick="applyListFilter()">Apply</button>
+            </div>
+        </div>
+
+        <div class="week-list-header">
+            <span>Weekly totals</span>
+            <span>M T W T F S S</span>
+        </div>
+        <div id="weekListItems" class="week-list"></div>
+    </div>
+
+    <!-- WEEK DETAIL VIEW -->
+    <div id="weekDetail" class="view-hidden">
+        <!-- Detail header -->
+        <div class="detail-header">
+            <button class="back-btn" onclick="showWeekList()">←</button>
+            <div class="detail-header-center">
+                <div class="detail-mode-selector">
+                    <select id="detailMode" onchange="changeDetailMode()">
+                        <option value="spend">Spend</option>
+                        <option value="income">Income</option>
+                        <option value="all">Income + Spending</option>
+                    </select>
+                </div>
+                <div class="detail-week-nav">
+                    <button class="week-nav-btn" onclick="navWeek(-1)">‹</button>
+                    <span id="detailWeekLabel" class="detail-week-label"></span>
+                    <button class="week-nav-btn" onclick="navWeek(1)">›</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Totals -->
+        <div id="detailTotals" class="detail-totals"></div>
+
+        <!-- Category filter for detail -->
+        <div class="category-filter-bar">
+            <button class="filter-toggle-btn" onclick="toggleCategoryPanel('detailCatPanel')">
+                Filter Categories <span class="filter-count" id="detailFilterCount"></span>
+            </button>
+            <div class="category-panel hidden" id="detailCatPanel">
+                <div class="cat-panel-header">
+                    <button class="cat-action" onclick="selectAllCats('detailCatPanel')">All</button>
+                    <button class="cat-action" onclick="selectNoneCats('detailCatPanel')">None</button>
+                </div>
+                <div class="cat-checkboxes" id="detailCatCheckboxes"></div>
+                <button class="btn btn-primary btn-sm" onclick="applyDetailFilter()">Apply</button>
+            </div>
+        </div>
+
+        <!-- Chart -->
+        <div class="chart-container">
+            <div class="avg-line-label" id="avgLabel"></div>
+            <canvas id="weekChart"></canvas>
+        </div>
+
+        <!-- Selected day indicator -->
+        <div id="selectedDayLabel" class="selected-day-label hidden"></div>
+
+        <!-- Transactions -->
+        <h2 class="section-title">Transactions</h2>
+        <div id="detailTransactions" class="transaction-list"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ─── STATE ────────────────────────────────────
+let allWeeks = [];
+let allCategories = [];
+let listMode = 'spend';
+let detailMode = 'spend';
+let currentWeekIndex = 0;
+let selectedDate = null;
+let weekChart = null;
+let listCategoryFilter = '';
+let detailCategoryFilter = '';
+
+// ─── INIT ─────────────────────────────────────
+async function init() {
+    const catRes = await fetch('/api/categories');
+    const catData = await catRes.json();
+    allCategories = catData.categories;
+    buildCategoryCheckboxes('listCatCheckboxes', allCategories);
+    buildCategoryCheckboxes('detailCatCheckboxes', allCategories);
+    loadWeekList();
+}
+
+// ─── CATEGORY FILTERING ──────────────────────
+function buildCategoryCheckboxes(containerId, cats) {
+    const el = document.getElementById(containerId);
+    el.innerHTML = cats.map(c => `
+        <label class="cat-check-label">
+            <input type="checkbox" value="${c}" checked> ${c}
+        </label>
+    `).join('');
+}
+
+function toggleCategoryPanel(panelId) {
+    document.getElementById(panelId).classList.toggle('hidden');
+}
+
+function selectAllCats(panelId) {
+    document.querySelectorAll(`#${panelId} input[type=checkbox]`).forEach(cb => cb.checked = true);
+}
+
+function selectNoneCats(panelId) {
+    document.querySelectorAll(`#${panelId} input[type=checkbox]`).forEach(cb => cb.checked = false);
+}
+
+function getSelectedCats(panelId) {
+    const checked = [...document.querySelectorAll(`#${panelId} input[type=checkbox]:checked`)].map(cb => cb.value);
+    if (checked.length === allCategories.length) return '';
+    return checked.join(',');
+}
+
+function updateFilterCount(countId, panelId) {
+    const checked = document.querySelectorAll(`#${panelId} input[type=checkbox]:checked`).length;
+    const el = document.getElementById(countId);
+    if (checked < allCategories.length) {
+        el.textContent = `(${checked})`;
+        el.classList.add('active-filter');
+    } else {
+        el.textContent = '';
+        el.classList.remove('active-filter');
+    }
+}
+
+function applyListFilter() {
+    listCategoryFilter = getSelectedCats('listCatPanel');
+    updateFilterCount('listFilterCount', 'listCatPanel');
+    document.getElementById('listCatPanel').classList.add('hidden');
+    loadWeekList();
+}
+
+function applyDetailFilter() {
+    detailCategoryFilter = getSelectedCats('detailCatPanel');
+    updateFilterCount('detailFilterCount', 'detailCatPanel');
+    document.getElementById('detailCatPanel').classList.add('hidden');
+    loadWeekDetail();
+}
+
+// ─── WEEK LIST ────────────────────────────────
+async function loadWeekList() {
+    const cf = listCategoryFilter ? `&categories=${encodeURIComponent(listCategoryFilter)}` : '';
+    const res = await fetch(`/api/weekly/weeks?mode=${listMode}${cf}`);
+    const data = await res.json();
+    allWeeks = data.weeks;
+    renderWeekList();
+}
+
+function setListMode(mode) {
+    listMode = mode;
+    document.querySelectorAll('#weekList .mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+    loadWeekList();
+}
+
+function renderWeekList() {
+    const el = document.getElementById('weekListItems');
+    if (!allWeeks.length) {
+        el.innerHTML = '<div class="empty-state">No transaction data yet. Upload a CSV to get started.</div>';
+        return;
+    }
+    el.innerHTML = allWeeks.map((w, i) => `
+        <div class="week-list-item" onclick="openWeekDetail(${i})">
+            <div class="week-list-info">
+                <div class="week-list-label">${w.label}</div>
+                <div class="week-list-total">$${w.total.toLocaleString(undefined, {minimumFractionDigits: 2})}</div>
+            </div>
+            <div class="week-mini-chart">
+                ${renderMiniChart(w.daily)}
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderMiniChart(daily) {
+    const key = listMode === 'income' ? 'income' : 'spend';
+    const vals = daily.map(d => listMode === 'all' ? d.income + d.spend : d[key]);
+    const max = Math.max(...vals, 1);
+    return `<div class="mini-bars">${daily.map((d, i) => {
+        const h = Math.max((vals[i] / max) * 36, 2);
+        return `<div class="mini-bar-col"><div class="mini-bar" style="height:${h}px"></div><span class="mini-day">${d.day_num}</span></div>`;
+    }).join('')}</div>`;
+}
+
+// ─── WEEK DETAIL ──────────────────────────────
+function openWeekDetail(index) {
+    currentWeekIndex = index;
+    selectedDate = null;
+    detailMode = listMode;
+    document.getElementById('detailMode').value = detailMode;
+    document.getElementById('weekList').className = 'view-hidden';
+    document.getElementById('weekDetail').className = 'view-active';
+    loadWeekDetail();
+}
+
+function showWeekList() {
+    document.getElementById('weekDetail').className = 'view-hidden';
+    document.getElementById('weekList').className = 'view-active';
+}
+
+function navWeek(dir) {
+    const ni = currentWeekIndex - dir;
+    if (ni >= 0 && ni < allWeeks.length) {
+        currentWeekIndex = ni;
+        selectedDate = null;
+        loadWeekDetail();
+    }
+}
+
+function changeDetailMode() {
+    detailMode = document.getElementById('detailMode').value;
+    selectedDate = null;
+    loadWeekDetail();
+}
+
+async function loadWeekDetail() {
+    const w = allWeeks[currentWeekIndex];
+    if (!w) return;
+    document.getElementById('detailWeekLabel').textContent = w.label;
+
+    const cf = detailCategoryFilter ? `&categories=${encodeURIComponent(detailCategoryFilter)}` : '';
+    const sd = selectedDate ? `&selected_date=${selectedDate}` : '';
+    const res = await fetch(`/api/weekly/detail?start=${w.start}&end=${w.end}&mode=${detailMode}${cf}${sd}`);
+    const data = await res.json();
+
+    renderDetailTotals(data);
+    renderWeekChart(data);
+    renderTransactions(data.transactions);
+
+    const dayLabel = document.getElementById('selectedDayLabel');
+    if (selectedDate) {
+        const d = new Date(selectedDate + 'T12:00:00');
+        dayLabel.textContent = d.toLocaleDateString('en-US', {weekday: 'long', month: 'short', day: 'numeric'});
+        dayLabel.classList.remove('hidden');
+    } else {
+        dayLabel.classList.add('hidden');
+    }
+}
+
+function renderDetailTotals(data) {
+    const el = document.getElementById('detailTotals');
+    if (detailMode === 'income') {
+        el.innerHTML = `<span class="total-amount positive">$${data.total_income.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>`;
+    } else if (detailMode === 'spend') {
+        el.innerHTML = `<span class="total-amount negative">$${data.total_spend.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>`;
+    } else {
+        el.innerHTML = `<span class="total-amount positive">$${data.total_income.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>
+            <span class="total-divider">/</span>
+            <span class="total-amount negative">-$${data.total_spend.toLocaleString(undefined, {minimumFractionDigits: 2})}</span>`;
+    }
+}
+
+function renderWeekChart(data) {
+    const canvas = document.getElementById('weekChart');
+    if (weekChart) weekChart.destroy();
+
+    const labels = data.daily.map(d => `${d.day_num}\n${d.day_label}`);
+    const datasets = [];
+    let avgVal = 0;
+
+    if (detailMode === 'income' || detailMode === 'all') {
+        datasets.push({
+            label: 'Income', data: data.daily.map(d => d.income),
+            backgroundColor: data.daily.map((_, i) => selectedDate && data.daily[i].date !== selectedDate ? 'rgba(52,211,153,0.25)' : 'rgba(52,211,153,0.85)'),
+            borderRadius: 4, barPercentage: detailMode === 'all' ? 0.4 : 0.6, categoryPercentage: 0.7
+        });
+    }
+    if (detailMode === 'spend' || detailMode === 'all') {
+        datasets.push({
+            label: 'Spend', data: data.daily.map(d => d.spend),
+            backgroundColor: data.daily.map((_, i) => selectedDate && data.daily[i].date !== selectedDate ? 'rgba(99,102,241,0.25)' : 'rgba(99,102,241,0.85)'),
+            borderRadius: 4, barPercentage: detailMode === 'all' ? 0.4 : 0.6, categoryPercentage: 0.7
+        });
+    }
+
+    if (detailMode === 'income') avgVal = data.avg_income;
+    else if (detailMode === 'spend') avgVal = data.avg_spend;
+    else avgVal = data.avg_income;
+
+    const avgLabel = document.getElementById('avgLabel');
+    avgLabel.textContent = `$${avgVal.toLocaleString(undefined, {minimumFractionDigits: 2})} avg`;
+
+    weekChart = new Chart(canvas, {
+        type: 'bar',
+        data: { labels, datasets },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            onClick: (e, elements) => handleChartClick(e, elements, data.daily),
+            plugins: {
+                legend: { display: detailMode === 'all', labels: { color: '#94a3b8', font: { family: 'DM Sans', size: 11 } } },
+                tooltip: { callbacks: { label: ctx => ' $' + ctx.parsed.y.toLocaleString(undefined, {minimumFractionDigits: 2}) } },
+                annotation: undefined
+            },
+            scales: {
+                x: { ticks: { color: '#64748b', font: { size: 11 }, maxRotation: 0 }, grid: { display: false } },
+                y: {
+                    ticks: { color: '#64748b', callback: v => '$' + v.toLocaleString(), font: { size: 10 } },
+                    grid: { color: 'rgba(148,163,184,0.08)' },
+                    beginAtZero: true
+                }
+            }
+        },
+        plugins: [{
+            id: 'avgLine',
+            afterDraw(chart) {
+                const yScale = chart.scales.y;
+                const yPos = yScale.getPixelForValue(avgVal);
+                const ctx = chart.ctx;
+                ctx.save();
+                ctx.setLineDash([6, 4]);
+                ctx.strokeStyle = 'rgba(148,163,184,0.5)';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(chart.chartArea.left, yPos);
+                ctx.lineTo(chart.chartArea.right, yPos);
+                ctx.stroke();
+                ctx.restore();
+            }
+        }]
+    });
+}
+
+function handleChartClick(e, elements, daily) {
+    if (!elements.length) return;
+    const idx = elements[0].index;
+    const clickedDate = daily[idx].date;
+
+    if (selectedDate === clickedDate) {
+        selectedDate = null;
+    } else {
+        selectedDate = clickedDate;
+    }
+    loadWeekDetail();
+}
+
+// ─── TRANSACTIONS ─────────────────────────────
+function renderTransactions(txns) {
+    const el = document.getElementById('detailTransactions');
+    if (!txns.length) {
+        el.innerHTML = '<div class="empty-state">No transactions for this period.</div>';
+        return;
+    }
+    // Mobile: stacked cards. Desktop: table via CSS.
+    el.innerHTML = txns.map(t => {
+        const isPos = t.amount >= 0;
+        return `<div class="txn-card">
+            <div class="txn-card-top">
+                <span class="txn-date">${t.posting_date}</span>
+                <span class="txn-amount ${isPos ? 'positive' : 'negative'}">$${Math.abs(t.amount).toFixed(2)}</span>
+            </div>
+            <div class="txn-card-desc">${t.description.substring(0, 60)}</div>
+            <div class="txn-card-bottom">
+                <span class="cat-badge">${t.category}</span>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+// ─── BOOT ─────────────────────────────────────
+init();
+</script>
+{% endblock %}

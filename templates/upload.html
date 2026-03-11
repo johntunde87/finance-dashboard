@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Upload CSV — MoneyMap{% endblock %}
+{% block content %}
+<div class="page-header"><h1>Upload Transactions</h1></div>
+<div class="card form-card upload-card">
+    <div class="upload-zone" id="dropZone">
+        <form method="POST" enctype="multipart/form-data" id="uploadForm">
+            <div class="upload-icon">↑</div>
+            <p class="upload-title">Drop your Chase CSV here</p>
+            <p class="upload-sub">or click to browse</p>
+            <input type="file" name="csv_file" accept=".csv" id="fileInput" class="file-input">
+            <button type="submit" class="btn btn-primary upload-btn" id="uploadBtn" style="display:none">Upload & Import</button>
+        </form>
+    </div>
+    <div class="upload-info"><h4>How it works</h4>
+        <p>Export your transactions from Chase as a CSV, then upload it here. Transactions will be auto-categorized and duplicates will be skipped.</p>
+        <p>Expected columns: Details, Posting Date, Description, Amount, Type, Balance</p>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+const dz = document.getElementById('dropZone'), fi = document.getElementById('fileInput'), ub = document.getElementById('uploadBtn');
+dz.addEventListener('click', () => fi.click());
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); fi.files = e.dataTransfer.files; sf(); });
+fi.addEventListener('change', sf);
+function sf() { if (fi.files.length) { document.querySelector('.upload-title').textContent = fi.files[0].name; document.querySelector('.upload-sub').textContent = (fi.files[0].size/1024).toFixed(1)+' KB'; ub.style.display = 'inline-flex'; } }
+</script>
+{% endblock %}

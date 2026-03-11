@@ -1,0 +1,226 @@
+{% extends "base.html" %}
+{% block title %}Monthly Analytics — MoneyMap{% endblock %}
+
+{% block content %}
+<div id="monthlyApp">
+    <div class="page-header">
+        <h1>Monthly Analytics</h1>
+    </div>
+
+    <!-- Mode selector -->
+    <div class="mode-bar">
+        <button class="mode-btn active" data-mode="spend" onclick="setMode('spend')">Spend</button>
+        <button class="mode-btn" data-mode="income" onclick="setMode('income')">Income</button>
+        <button class="mode-btn" data-mode="all" onclick="setMode('all')">Income + Spend</button>
+    </div>
+
+    <!-- Month nav -->
+    <div class="month-nav">
+        <button class="week-nav-btn" onclick="navMonth(-1)">‹</button>
+        <span id="monthLabel" class="detail-week-label"></span>
+        <button class="week-nav-btn" onclick="navMonth(1)">›</button>
+    </div>
+
+    <!-- Totals -->
+    <div id="monthTotals" class="detail-totals"></div>
+
+    <!-- Category filter -->
+    <div class="category-filter-bar">
+        <button class="filter-toggle-btn" onclick="toggleCategoryPanel('monthCatPanel')">
+            Filter Categories <span class="filter-count" id="monthFilterCount"></span>
+        </button>
+        <div class="category-panel hidden" id="monthCatPanel">
+            <div class="cat-panel-header">
+                <button class="cat-action" onclick="selectAllCats('monthCatPanel')">All</button>
+                <button class="cat-action" onclick="selectNoneCats('monthCatPanel')">None</button>
+            </div>
+            <div class="cat-checkboxes" id="monthCatCheckboxes"></div>
+            <button class="btn btn-primary btn-sm" onclick="applyMonthFilter()">Apply</button>
+        </div>
+    </div>
+
+    <!-- Calendar grid -->
+    <div class="calendar-grid-wrapper">
+        <div class="calendar-header-row">
+            <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+        </div>
+        <div id="calendarGrid" class="calendar-grid"></div>
+    </div>
+
+    <!-- Selected day indicator -->
+    <div id="monthSelectedDay" class="selected-day-label hidden"></div>
+
+    <!-- Transactions -->
+    <h2 class="section-title">Transactions</h2>
+    <div id="monthTransactions" class="transaction-list"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let allMonths = [];
+let allCategories = [];
+let currentMonthIndex = 0;
+let monthMode = 'spend';
+let monthSelectedDate = null;
+let monthCategoryFilter = '';
+
+async function init() {
+    const [catRes, monthRes] = await Promise.all([fetch('/api/categories'), fetch('/api/monthly/months')]);
+    const catData = await catRes.json();
+    const monthData = await monthRes.json();
+    allCategories = catData.categories;
+    allMonths = monthData.months;
+    buildCategoryCheckboxes('monthCatCheckboxes', allCategories);
+    if (allMonths.length) loadMonthDetail();
+}
+
+function buildCategoryCheckboxes(containerId, cats) {
+    document.getElementById(containerId).innerHTML = cats.map(c =>
+        `<label class="cat-check-label"><input type="checkbox" value="${c}" checked> ${c}</label>`
+    ).join('');
+}
+
+function toggleCategoryPanel(id) { document.getElementById(id).classList.toggle('hidden'); }
+function selectAllCats(id) { document.querySelectorAll(`#${id} input[type=checkbox]`).forEach(cb => cb.checked = true); }
+function selectNoneCats(id) { document.querySelectorAll(`#${id} input[type=checkbox]`).forEach(cb => cb.checked = false); }
+function getSelectedCats(id) {
+    const checked = [...document.querySelectorAll(`#${id} input[type=checkbox]:checked`)].map(cb => cb.value);
+    return checked.length === allCategories.length ? '' : checked.join(',');
+}
+
+function applyMonthFilter() {
+    monthCategoryFilter = getSelectedCats('monthCatPanel');
+    const checked = document.querySelectorAll('#monthCatPanel input:checked').length;
+    const el = document.getElementById('monthFilterCount');
+    if (checked < allCategories.length) { el.textContent = `(${checked})`; el.classList.add('active-filter'); }
+    else { el.textContent = ''; el.classList.remove('active-filter'); }
+    document.getElementById('monthCatPanel').classList.add('hidden');
+    loadMonthDetail();
+}
+
+function setMode(mode) {
+    monthMode = mode;
+    document.querySelectorAll('#monthlyApp .mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+    monthSelectedDate = null;
+    loadMonthDetail();
+}
+
+function navMonth(dir) {
+    const ni = currentMonthIndex - dir;
+    if (ni >= 0 && ni < allMonths.length) {
+        currentMonthIndex = ni;
+        monthSelectedDate = null;
+        loadMonthDetail();
+    }
+}
+
+async function loadMonthDetail() {
+    const m = allMonths[currentMonthIndex];
+    if (!m) return;
+    document.getElementById('monthLabel').textContent = m.label;
+
+    const cf = monthCategoryFilter ? `&categories=${encodeURIComponent(monthCategoryFilter)}` : '';
+    const sd = monthSelectedDate ? `&selected_date=${monthSelectedDate}` : '';
+    const res = await fetch(`/api/monthly/detail?month=${m.value}&mode=${monthMode}${cf}${sd}`);
+    const data = await res.json();
+
+    renderMonthTotals(data);
+    renderCalendar(data);
+    renderMonthTxns(data.transactions);
+
+    const dayLabel = document.getElementById('monthSelectedDay');
+    if (monthSelectedDate) {
+        const d = new Date(monthSelectedDate + 'T12:00:00');
+        dayLabel.textContent = d.toLocaleDateString('en-US', {weekday: 'long', month: 'short', day: 'numeric'});
+        dayLabel.classList.remove('hidden');
+    } else {
+        dayLabel.classList.add('hidden');
+    }
+}
+
+function renderMonthTotals(data) {
+    const el = document.getElementById('monthTotals');
+    if (monthMode === 'income') {
+        el.innerHTML = `<span class="total-amount positive">$${data.total_income.toLocaleString(undefined,{minimumFractionDigits:2})}</span>`;
+    } else if (monthMode === 'spend') {
+        el.innerHTML = `<span class="total-amount negative">$${data.total_spend.toLocaleString(undefined,{minimumFractionDigits:2})}</span>`;
+    } else {
+        el.innerHTML = `<span class="total-amount positive">$${data.total_income.toLocaleString(undefined,{minimumFractionDigits:2})}</span>
+            <span class="total-divider">/</span>
+            <span class="total-amount negative">-$${data.total_spend.toLocaleString(undefined,{minimumFractionDigits:2})}</span>`;
+    }
+}
+
+function renderCalendar(data) {
+    const grid = document.getElementById('calendarGrid');
+    const fw = data.first_weekday; // 0=Mon
+    let html = '';
+
+    // Empty cells for offset
+    for (let i = 0; i < fw; i++) html += '<div class="cal-cell cal-empty"></div>';
+
+    // Find max for heat intensity
+    const vals = data.daily.map(d => monthMode === 'income' ? d.income : monthMode === 'spend' ? d.spend : d.income + d.spend);
+    const maxVal = Math.max(...vals, 1);
+
+    data.daily.forEach(d => {
+        const val = monthMode === 'income' ? d.income : monthMode === 'spend' ? d.spend : d.income + d.spend;
+        const intensity = Math.min(val / maxVal, 1);
+        const isSelected = monthSelectedDate === d.date;
+        const hasData = val > 0;
+
+        let bgColor;
+        if (isSelected) {
+            bgColor = 'rgba(99,102,241,0.9)';
+        } else if (monthMode === 'income') {
+            bgColor = hasData ? `rgba(52,211,153,${0.15 + intensity * 0.55})` : 'transparent';
+        } else if (monthMode === 'spend') {
+            bgColor = hasData ? `rgba(99,102,241,${0.15 + intensity * 0.55})` : 'transparent';
+        } else {
+            bgColor = hasData ? `rgba(99,102,241,${0.15 + intensity * 0.45})` : 'transparent';
+        }
+
+        html += `<div class="cal-cell ${hasData ? 'cal-has-data' : ''} ${isSelected ? 'cal-selected' : ''}"
+                      style="background:${bgColor}" onclick="selectCalDay('${d.date}')">
+            <span class="cal-day-num">${d.day}</span>
+            ${hasData ? `<span class="cal-day-amount">$${val >= 1000 ? Math.round(val/1000)+'k' : Math.round(val)}</span>` : ''}
+        </div>`;
+    });
+
+    grid.innerHTML = html;
+}
+
+function selectCalDay(dateStr) {
+    if (monthSelectedDate === dateStr) {
+        monthSelectedDate = null;
+    } else {
+        monthSelectedDate = dateStr;
+    }
+    loadMonthDetail();
+}
+
+function renderMonthTxns(txns) {
+    const el = document.getElementById('monthTransactions');
+    if (!txns.length) {
+        el.innerHTML = '<div class="empty-state">No transactions for this period.</div>';
+        return;
+    }
+    el.innerHTML = txns.map(t => {
+        const isPos = t.amount >= 0;
+        return `<div class="txn-card">
+            <div class="txn-card-top">
+                <span class="txn-date">${t.posting_date}</span>
+                <span class="txn-amount ${isPos ? 'positive' : 'negative'}">$${Math.abs(t.amount).toFixed(2)}</span>
+            </div>
+            <div class="txn-card-desc">${t.description.substring(0, 60)}</div>
+            <div class="txn-card-bottom">
+                <span class="cat-badge">${t.category}</span>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+init();
+</script>
+{% endblock %}
