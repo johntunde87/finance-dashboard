@@ -255,6 +255,70 @@ def compute_trailing_table_kpis(conn):
         }
     }
 
+def get_kpi_settings(conn):
+    row = conn.execute('SELECT monthly_net_target FROM kpi_settings WHERE id=1').fetchone()
+    return {'monthly_net_target': row['monthly_net_target'] if row else None}
+
+
+def compute_primary_target(conn, monthly_net_target, ytd_net, months_remaining):
+    today = date.today()
+    month_start = date(today.year, today.month, 1).isoformat()
+    month_end = today.isoformat()
+    cur_inc = conn.execute(
+        'SELECT COALESCE(SUM(amount),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount>0 AND is_internal_transfer=0',
+        (month_start, month_end)
+    ).fetchone()[0]
+    cur_spd = conn.execute(
+        'SELECT COALESCE(SUM(ABS(amount)),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount<0 AND is_internal_transfer=0',
+        (month_start, month_end)
+    ).fetchone()[0]
+    cur_month_net = cur_inc - cur_spd
+    days_in_month = calendar.monthrange(today.year, today.month)[1]
+    days_elapsed_in_month = today.day
+    paced_month_net = round(cur_month_net / days_elapsed_in_month * days_in_month, 2) if days_elapsed_in_month > 0 else 0.0
+    on_track = paced_month_net >= monthly_net_target
+    implied_yearend_net = round(ytd_net + monthly_net_target * months_remaining, 2)
+    return {
+        'monthly_net_target':     round(monthly_net_target, 2),
+        'current_month_net':      round(cur_month_net, 2),
+        'paced_month_net':        paced_month_net,
+        'on_track':               on_track,
+        'days_elapsed_in_month':  days_elapsed_in_month,
+        'days_in_month':          days_in_month,
+        'implied_yearend_net':    implied_yearend_net,
+    }
+
+
+def compute_action_panel(monthly_net_target, ytd_net, trailing_monthly_net, months_remaining):
+    gap = monthly_net_target - trailing_monthly_net  # positive = behind target
+    if gap <= 0:
+        feasibility = 'on_track'
+        feasibility_label = 'On track'
+    elif monthly_net_target > 0 and gap <= monthly_net_target * 0.25:
+        feasibility = 'slight_stretch'
+        feasibility_label = 'Slight stretch'
+    else:
+        feasibility = 'unlikely'
+        feasibility_label = 'Unlikely at current pace'
+    eoy_projected = round(ytd_net + trailing_monthly_net * months_remaining, 2)
+    levers = {
+        'income_only':    round(max(gap, 0), 2),
+        'spend_only':     round(max(gap, 0), 2),
+        'blended':        round(max(gap, 0) / 2, 2),
+    }
+    return {
+        'gap':                   round(gap, 2),
+        'feasibility':           feasibility,
+        'feasibility_label':     feasibility_label,
+        'eoy_projected':         eoy_projected,
+        'breaks_even':           eoy_projected >= 0,
+        'levers':                levers,
+        'trailing_monthly_net':  round(trailing_monthly_net, 2),
+        'monthly_net_target':    round(monthly_net_target, 2),
+        'months_remaining':      round(months_remaining, 2),
+    }
+
+
 def compute_ytd_kpis(conn):
     """Year-to-date actuals + pace-based end-of-year projection."""
     today = date.today()
@@ -646,19 +710,64 @@ def api_kpis():
     has_data = conn.execute("SELECT COUNT(*) FROM transactions WHERE is_internal_transfer=0").fetchone()[0] > 0
     ytd      = compute_ytd_kpis(conn)
     compare  = compute_year_comparison(conn)
+    settings = get_kpi_settings(conn)
 
-    table_kpis = None
+    table_kpis     = None
+    primary_target = None
+    action_panel   = None
+
     if has_data:
         table_kpis = compute_ytd_table_kpis(conn) if mode == 'ytd' else compute_trailing_table_kpis(conn)
 
+        # Always need trailing monthly net for Action Panel / target card
+        if mode == 'trailing':
+            trailing_kpis = table_kpis
+        else:
+            trailing_kpis = compute_trailing_table_kpis(conn)
+        trailing_monthly_net = trailing_kpis['net']['avg_monthly']
+
+        # Months remaining in year (fractional)
+        today = date.today()
+        days_in_cur_month = calendar.monthrange(today.year, today.month)[1]
+        elapsed_months    = (today.month - 1) + today.day / days_in_cur_month
+        months_remaining  = 12 - elapsed_months
+
+        # Resolve monthly net target (user-set or break-even fallback)
+        mnt = settings['monthly_net_target']
+        is_default_target = mnt is None
+        if is_default_target:
+            mnt = max(0.0, round(-ytd['net'] / months_remaining, 2)) if months_remaining > 0 else 0.0
+
+        primary_target = compute_primary_target(conn, mnt, ytd['net'], months_remaining)
+        primary_target['is_default_target'] = is_default_target
+
+        action_panel = compute_action_panel(mnt, ytd['net'], trailing_monthly_net, months_remaining)
+
     conn.close()
     return jsonify({
-        'mode':          mode,
-        'has_data':      has_data,
-        'table_kpis':    table_kpis,
-        'ytd':           ytd,
-        'compare_years': compare,
+        'mode':           mode,
+        'has_data':       has_data,
+        'table_kpis':     table_kpis,
+        'ytd':            ytd,
+        'compare_years':  compare,
+        'settings':       settings,
+        'primary_target': primary_target,
+        'action_panel':   action_panel,
     })
+
+
+@app.route('/api/kpis/settings', methods=['POST'])
+def api_kpis_settings():
+    data = request.get_json() or {}
+    mnt  = data.get('monthly_net_target')  # float or None (None = reset to default)
+    conn = get_db()
+    conn.execute(
+        'INSERT OR REPLACE INTO kpi_settings (id, monthly_net_target, updated_at) VALUES (1, ?, CURRENT_TIMESTAMP)',
+        (mnt,)
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True, 'monthly_net_target': mnt})
 
 
 if __name__ == '__main__':

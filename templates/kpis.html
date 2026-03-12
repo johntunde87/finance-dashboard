@@ -7,49 +7,52 @@
         <h1>KPI Dashboard</h1>
     </div>
 
-    <!-- Mode toggle -->
-    <div class="mode-bar" id="modeBar">
-        <button class="mode-btn active" data-mode="ytd"      onclick="setMode('ytd')">YTD View</button>
-        <button class="mode-btn"        data-mode="trailing" onclick="setMode('trailing')">Trailing View</button>
-    </div>
-
-    <div id="kpiLoading" class="empty-state">Loading...</div>
-    <div id="kpiEmpty"   class="empty-state hidden">No transaction data yet. <a href="/upload">Upload a CSV</a> to get started.</div>
+    <div id="kpiLoading" class="empty-state">Loading…</div>
+    <div id="kpiEmpty" class="empty-state hidden">No transaction data yet. <a href="/upload">Upload a CSV</a> to get started.</div>
 
     <div id="kpiContent" class="hidden">
 
-        <!-- ── YTD Summary ───────────────────────────────────── -->
+        <!-- ══ SECTION A: Persistent YTD Snapshot ══════════════════ -->
         <div class="section" style="margin-bottom:16px">
             <div class="section-header">
-                <h2>Year to Date &nbsp;<span id="ytdYearLabel" style="color:var(--text-muted);font-weight:400;font-size:14px"></span></h2>
+                <h2 id="ytdSnapshotTitle">YTD Snapshot
+                    <span id="ytdYearLabel" style="color:var(--text-muted);font-weight:400;font-size:14px"></span>
+                </h2>
                 <span id="ytdDaysLabel" style="font-size:12px;color:var(--text-muted)"></span>
             </div>
             <div class="kpi-grid" id="ytdCards"></div>
         </div>
 
-        <!-- ── Income KPIs ──────────────────────────────────── -->
-        <div class="section kpi-group" id="incomeGroup"></div>
-
-        <!-- ── Spending KPIs ────────────────────────────────── -->
-        <div class="section kpi-group" id="spendGroup"></div>
-
-        <!-- ── Net KPIs ─────────────────────────────────────── -->
-        <div class="section kpi-group" id="netGroup"></div>
-
-        <!-- ── Year over Year ───────────────────────────────── -->
-        <div id="compareSection" class="section hidden" style="margin-bottom:16px">
-            <div class="section-header">
-                <h2>Year over Year</h2>
-                <span id="compareYearsLabel" style="font-size:12px;color:var(--text-muted)"></span>
+        <!-- ══ SECTION B: Trend Analysis ═══════════════════════════ -->
+        <div class="section" style="margin-bottom:16px">
+            <div class="kpi-section-header">
+                <h2>Trend Analysis</h2>
+                <div class="mode-bar" id="trendToggle" style="margin-bottom:0">
+                    <button class="mode-btn active" data-mode="ytd"      onclick="setMode('ytd')">YTD Averages</button>
+                    <button class="mode-btn"        data-mode="trailing" onclick="setMode('trailing')">Trailing Averages</button>
+                </div>
             </div>
-            <div class="kpi-grid" id="compareSummaryCards" style="margin-bottom:20px"></div>
+            <div id="trendGroups"></div>
+        </div>
+
+        <!-- ══ SECTION C: Monthly Trend Chart ══════════════════════ -->
+        <div id="monthlyTrendSection" class="section hidden" style="margin-bottom:16px">
+            <div class="section-header">
+                <h2>Monthly Trend</h2>
+                <span id="monthlyTrendLabel" style="font-size:12px;color:var(--text-muted)"></span>
+            </div>
             <div class="chart-card" style="margin-bottom:0">
-                <h3 id="compareChartTitle"></h3>
-                <canvas id="compareChart" style="height:220px;max-height:220px"></canvas>
+                <canvas id="monthlyTrendChart" style="height:220px;max-height:220px"></canvas>
             </div>
         </div>
 
-        <!-- ── Methodology note ─────────────────────────────── -->
+        <!-- ══ PRIMARY TARGET CARD ══════════════════════════════════ -->
+        <div id="primaryTargetCard"></div>
+
+        <!-- ══ SECTION D: Action Panel ══════════════════════════════ -->
+        <div id="actionPanel"></div>
+
+        <!-- ══ Methodology note ════════════════════════════════════ -->
         <div class="section" style="margin-bottom:0">
             <div class="section-header" style="cursor:pointer;margin-bottom:0" onclick="toggleMethodology()">
                 <h2 style="font-size:13px;color:var(--text-muted);font-weight:500">ℹ Projection methodology</h2>
@@ -64,58 +67,75 @@
 
 {% block scripts %}
 <script>
-// ─── STATE ────────────────────────────────────────
-let currentMode = 'ytd';   // 'ytd' | 'trailing'
-let compareChartInstance = null;
+// ─── STATE ────────────────────────────────────────────
+let currentMode   = 'ytd';
+let cachedStatic  = null;   // sections A, C, D — loaded once
+let trendChart    = null;
 
-// ─── INIT ─────────────────────────────────────────
-async function init() { await loadKPIs(); }
+// ─── INIT ─────────────────────────────────────────────
+async function init() { await loadKPIs(true); }
 
 function setMode(m) {
     currentMode = m;
-    document.querySelectorAll('#modeBar .mode-btn').forEach(b => b.classList.toggle('active', b.dataset.mode === m));
-    loadKPIs();
+    document.querySelectorAll('#trendToggle .mode-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.mode === m));
+    loadKPIs(false);
 }
 
-async function loadKPIs() {
-    document.getElementById('kpiLoading').classList.remove('hidden');
-    document.getElementById('kpiContent').classList.add('hidden');
-    document.getElementById('kpiEmpty').classList.add('hidden');
+async function loadKPIs(isFirstLoad) {
+    if (isFirstLoad) {
+        document.getElementById('kpiLoading').classList.remove('hidden');
+        document.getElementById('kpiContent').classList.add('hidden');
+        document.getElementById('kpiEmpty').classList.add('hidden');
+    }
 
     const res  = await fetch(`/api/kpis?mode=${currentMode}`);
     const data = await res.json();
 
-    document.getElementById('kpiLoading').classList.add('hidden');
-
-    if (!data.has_data) {
-        document.getElementById('kpiEmpty').classList.remove('hidden');
-        return;
+    if (isFirstLoad) {
+        document.getElementById('kpiLoading').classList.add('hidden');
+        if (!data.has_data) {
+            document.getElementById('kpiEmpty').classList.remove('hidden');
+            return;
+        }
+        document.getElementById('kpiContent').classList.remove('hidden');
     }
 
-    document.getElementById('kpiContent').classList.remove('hidden');
-    renderYTD(data.ytd, data.compare_years);
-    renderGroup('incomeGroup', 'Income',   'income', data.table_kpis);
-    renderGroup('spendGroup',  'Spending', 'spend',  data.table_kpis);
-    renderGroup('netGroup',    'Net',      'net',    data.table_kpis);
-    renderCompare(data.compare_years);
+    // Static sections — render once (or always; idempotent)
+    if (isFirstLoad || !cachedStatic) {
+        cachedStatic = data;
+        renderYTDSnapshot(data.ytd, data.compare_years);
+        renderMonthlyTrend(data.compare_years);
+        renderPrimaryTargetCard(data.primary_target, data.settings);
+        renderActionPanel(data.action_panel);
+    }
+
+    // Mode-dependent section
+    renderTrendGroups(data.table_kpis);
     renderMethodologyNote(data);
 }
 
-// ─── FORMAT HELPERS ───────────────────────────────
+// ─── FORMAT HELPERS ───────────────────────────────────
 function fmt(v) {
-    return '$' + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    return '$' + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
 function fmtSigned(v, invertColor) {
     const sign = v >= 0 ? '+' : '';
     const cls  = invertColor ? (v > 0 ? 'negative' : 'positive') : (v >= 0 ? 'positive' : 'negative');
     return `<span class="${cls}">${sign}${fmt(v)}</span>`;
 }
+function fmtNet(v) {
+    const cls = v >= 0 ? 'positive' : 'negative';
+    const sign = v >= 0 ? '+' : '−';
+    return `<span class="${cls}">${sign}${fmt(v)}</span>`;
+}
 
-// ─── YTD SUMMARY CARDS ────────────────────────────
-// Shows current YTD total, prior-year same-date YTD total, YoY change, and EOY pace.
-function renderYTD(ytd, compare) {
-    document.getElementById('ytdYearLabel').textContent = ytd.year;
+// ─── SECTION A: YTD SNAPSHOT ──────────────────────────
+function renderYTDSnapshot(ytd, compare) {
     const total = ytd.days_elapsed + ytd.days_remaining;
+    document.getElementById('ytdSnapshotTitle').innerHTML =
+        `${ytd.year} YTD Snapshot`;
+    document.getElementById('ytdYearLabel').textContent = '';
     document.getElementById('ytdDaysLabel').textContent =
         `Day ${ytd.days_elapsed} of ${total} · ${ytd.days_remaining} days remaining`;
 
@@ -123,20 +143,20 @@ function renderYTD(ytd, compare) {
     const pri = compare && compare.has_prior_year ? compare.prior_year : null;
 
     const cards = [
-        { label: 'YTD Income', cur: ytd.income, eoy: ytd.projected_eoy_income,
-          priVal: pri ? pri.income : null, valCls: 'positive', accentCls: 'card-accent-green', invert: false },
-        { label: 'YTD Spend',  cur: ytd.spend,  eoy: ytd.projected_eoy_spend,
-          priVal: pri ? pri.spend  : null, valCls: 'negative', accentCls: 'card-accent-red',   invert: true  },
-        { label: 'YTD Net',    cur: ytd.net,     eoy: ytd.projected_eoy_net,
+        { label:'Income YTD', cur:ytd.income, eoy:ytd.projected_eoy_income,
+          priVal: pri ? pri.income : null, valCls:'positive', accentCls:'card-accent-green', invert:false },
+        { label:'Spend YTD',  cur:ytd.spend,  eoy:ytd.projected_eoy_spend,
+          priVal: pri ? pri.spend  : null, valCls:'negative', accentCls:'card-accent-red',   invert:true  },
+        { label:'Net YTD',    cur:ytd.net,    eoy:ytd.projected_eoy_net,
           priVal: pri ? pri.net    : null,
           valCls: ytd.net >= 0 ? 'positive' : 'negative',
-          accentCls: ytd.net >= 0 ? 'card-accent-green' : 'card-accent-red', invert: false },
+          accentCls: ytd.net >= 0 ? 'card-accent-green' : 'card-accent-red', invert:false },
     ];
 
     document.getElementById('ytdCards').innerHTML = cards.map(c => {
         let yoyHtml = '';
         if (c.priVal !== null) {
-            const delta  = c.cur - c.priVal;
+            const delta    = c.cur - c.priVal;
             const deltaPct = c.priVal !== 0 ? Math.round((delta / Math.abs(c.priVal)) * 100) : 0;
             yoyHtml = `
                 <div class="kpi-sub" style="margin-top:2px">
@@ -155,164 +175,303 @@ function renderYTD(ytd, compare) {
     }).join('');
 }
 
-// ─── KPI GROUP TABLES ─────────────────────────────
-// YTD mode:      columns = YTD Avg | EOY Pace    final row = "EOY Pace"
-// Trailing mode: columns = Trailing Avg           final row = "Annualized Trend"
-function renderGroup(elId, title, metric, kpis) {
-    if (!kpis || !kpis[metric]) return;
-    const m = kpis[metric];
-
-    const avgRows = [
-        { key: 'avg_daily',     label: 'Daily avg'     },
-        { key: 'avg_weekly',    label: 'Weekly avg'    },
-        { key: 'avg_monthly',   label: 'Monthly avg'   },
-        { key: 'avg_quarterly', label: 'Quarterly avg' },
+// ─── SECTION B: TREND ANALYSIS ────────────────────────
+function renderTrendGroups(kpis) {
+    if (!kpis) return;
+    const groups = [
+        { id:'tg-income', title:'Income',  metric:'income', dot:'var(--green)' },
+        { id:'tg-spend',  title:'Spend',   metric:'spend',  dot:'var(--red)'   },
+        { id:'tg-net',    title:'Net',     metric:'net',    dot:'var(--accent)' },
     ];
+    document.getElementById('trendGroups').innerHTML =
+        groups.map(g => buildGroupHtml(g, kpis[g.metric])).join('');
+}
 
-    const dot = { income: 'var(--green)', spend: 'var(--red)', net: 'var(--accent)' }[metric];
-    let thead, rows;
+function buildGroupHtml(g, m) {
+    if (!m) return '';
+    const isYTD = currentMode === 'ytd';
+    const colHeader = isYTD ? 'YTD Avg' : 'Trailing Avg';
 
-    if (currentMode === 'ytd') {
-        thead = `<tr>
-            <th>Horizon</th>
-            <th class="text-right">YTD Avg</th>
-            <th class="text-right">EOY Pace</th>
-        </tr>`;
-        rows = avgRows.map(h => `<tr>
-            <td style="color:var(--text-secondary)">${h.label}</td>
-            <td class="text-right mono positive">${fmt(m[h.key])}</td>
-            <td class="text-right mono" style="color:var(--text-muted)">—</td>
+    const baseRows = [
+        { key:'avg_daily',   label:'Daily avg'   },
+        { key:'avg_weekly',  label:'Weekly avg'  },
+        { key:'avg_monthly', label:'Monthly avg' },
+    ];
+    const advRow = { key:'avg_quarterly', label:'Quarterly avg' };
+
+    // Color formatter for the metric
+    function fmtMetric(v) {
+        if (g.metric === 'net') return `<span class="${v >= 0 ? 'positive' : 'negative'}">${v >= 0 ? '' : '−'}${fmt(v)}</span>`;
+        return fmt(v);
+    }
+
+    const baseRowsHtml = baseRows.map(h => `
+        <tr>
+            <td>${h.label}</td>
+            <td>${fmtMetric(m[h.key])}</td>
         </tr>`).join('');
-        // Final row: YTD Total + EOY Pace (full-year projection)
-        rows += `<tr style="border-top:1px solid var(--border);font-weight:600">
-            <td style="color:var(--text-primary)">EOY Pace</td>
-            <td class="text-right mono" style="color:var(--text-muted)">${fmt(m.ytd_total)}</td>
-            <td class="text-right mono" style="color:var(--accent)">${fmt(m.eoy_pace)}</td>
+
+    const advRowHtml = `
+        <tr id="${g.id}-adv-row" class="hidden">
+            <td>Quarterly avg</td>
+            <td>${fmtMetric(m[advRow.key])}</td>
         </tr>`;
-    } else {
-        thead = `<tr>
-            <th>Horizon</th>
-            <th class="text-right">Trailing Avg</th>
-        </tr>`;
-        rows = avgRows.map(h => `<tr>
-            <td style="color:var(--text-secondary)">${h.label}</td>
-            <td class="text-right mono positive">${fmt(m[h.key])}</td>
-        </tr>`).join('');
-        // Final row: Annualized Trend (trailing monthly avg × 12)
-        rows += `<tr style="border-top:1px solid var(--border);font-weight:600">
+
+    let finalRowHtml = '';
+    if (!isYTD) {
+        finalRowHtml = `
+        <tr style="border-top:1px solid var(--border);font-weight:600">
             <td style="color:var(--text-primary)">Annualized Trend</td>
-            <td class="text-right mono" style="color:var(--accent)">${fmt(m.annualized_trend)}</td>
+            <td style="color:var(--accent)">${fmt(m.annualized_trend)}</td>
         </tr>`;
     }
 
-    document.getElementById(elId).innerHTML = `
-        <div class="section-header" style="margin-bottom:12px">
-            <h2 style="display:flex;align-items:center;gap:8px">
-                <span style="width:9px;height:9px;border-radius:50%;background:${dot};display:inline-block;flex-shrink:0"></span>
-                ${title} KPIs
-            </h2>
+    return `
+    <div class="kpi-group">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <span style="width:8px;height:8px;border-radius:50%;background:${g.dot};display:inline-block;flex-shrink:0"></span>
+            <span style="font-size:14px;font-weight:600;color:var(--text-primary)">${g.title}</span>
         </div>
         <div class="table-wrapper">
             <table class="txn-table kpi-table">
-                <thead>${thead}</thead>
-                <tbody>${rows}</tbody>
+                <thead>
+                    <tr>
+                        <th>Horizon</th>
+                        <th>${colHeader}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${baseRowsHtml}
+                    ${advRowHtml}
+                    ${finalRowHtml}
+                </tbody>
             </table>
+            <button class="advanced-toggle" onclick="toggleAdvanced('${g.id}', this)">
+                + Show quarterly
+            </button>
         </div>
-    `;
+    </div>`;
 }
 
-// ─── YEAR COMPARISON ──────────────────────────────
-// Chart only shows Jan through current month for both years (same-date YTD, apples-to-apples).
-function renderCompare(compare) {
-    const section = document.getElementById('compareSection');
-    if (!compare.has_prior_year) { section.classList.add('hidden'); return; }
-    section.classList.remove('hidden');
+function toggleAdvanced(groupId, btn) {
+    const row = document.getElementById(groupId + '-adv-row');
+    const hidden = row.classList.toggle('hidden');
+    btn.textContent = hidden ? '+ Show quarterly' : '− Hide quarterly';
+}
 
+// ─── SECTION C: MONTHLY TREND CHART ───────────────────
+function renderMonthlyTrend(compare) {
+    const section = document.getElementById('monthlyTrendSection');
+    if (!compare || !compare.has_prior_year) {
+        // Show current year only if no prior year
+        const cur = compare ? compare.current_year : null;
+        if (!cur || !cur.by_month || cur.by_month.length === 0) {
+            section.classList.add('hidden');
+            return;
+        }
+        section.classList.remove('hidden');
+        document.getElementById('monthlyTrendLabel').textContent =
+            `${cur.year} YTD — monthly breakdown`;
+        buildTrendChart(cur.by_month.map(m => m.label), [
+            { label:`${cur.year} Income`, data:cur.by_month.map(m => m.income), bg:'rgba(52,211,153,0.8)'  },
+            { label:`${cur.year} Spend`,  data:cur.by_month.map(m => m.spend),  bg:'rgba(99,102,241,0.8)' },
+        ]);
+        return;
+    }
+
+    section.classList.remove('hidden');
     const cur = compare.current_year;
     const pri = compare.prior_year;
+    document.getElementById('monthlyTrendLabel').textContent =
+        `${cur.year} YTD vs ${pri.year} same months`;
+    buildTrendChart(cur.by_month.map(m => m.label), [
+        { label:`${cur.year} Income`, data:cur.by_month.map(m => m.income), bg:'rgba(52,211,153,0.8)'  },
+        { label:`${pri.year} Income`, data:pri.by_month.map(m => m.income), bg:'rgba(52,211,153,0.25)' },
+        { label:`${cur.year} Spend`,  data:cur.by_month.map(m => m.spend),  bg:'rgba(99,102,241,0.8)'  },
+        { label:`${pri.year} Spend`,  data:pri.by_month.map(m => m.spend),  bg:'rgba(99,102,241,0.25)' },
+    ]);
+}
 
-    document.getElementById('compareYearsLabel').textContent = compare.comparison_label;
-    document.getElementById('compareChartTitle').textContent =
-        `Monthly Income & Spend — ${cur.year} YTD vs ${pri.year} same months`;
-
-    // Summary cards (same-date YTD vs same-date YTD)
-    const fields = [
-        { label: 'Income', cur: cur.income, pri: pri.income, invert: false },
-        { label: 'Spend',  cur: cur.spend,  pri: pri.spend,  invert: true  },
-        { label: 'Net',    cur: cur.net,    pri: pri.net,    invert: false  },
-    ];
-    document.getElementById('compareSummaryCards').innerHTML = fields.map(f => {
-        const delta = f.cur - f.pri;
-        const pct   = f.pri !== 0 ? Math.round((delta / Math.abs(f.pri)) * 100) : 0;
-        return `<div class="kpi-card">
-            <div class="kpi-label">${f.label}</div>
-            <div style="display:flex;gap:20px;align-items:baseline;flex-wrap:wrap;margin-top:4px">
-                <div>
-                    <div style="font-size:10px;color:var(--text-muted);margin-bottom:1px">${cur.year} YTD</div>
-                    <div class="kpi-value">${fmt(f.cur)}</div>
-                </div>
-                <div>
-                    <div style="font-size:10px;color:var(--text-muted);margin-bottom:1px">${pri.year} YTD</div>
-                    <div style="font-family:'JetBrains Mono',monospace;font-size:16px;color:var(--text-secondary)">${fmt(f.pri)}</div>
-                </div>
-            </div>
-            <div class="kpi-sub" style="margin-top:4px">
-                ${fmtSigned(delta, f.invert)} (${pct >= 0 ? '+' : ''}${pct}%) YoY
-            </div>
-        </div>`;
-    }).join('');
-
-    // Chart: both arrays are already trimmed to Jan–current month by the backend
-    if (compareChartInstance) compareChartInstance.destroy();
-    compareChartInstance = new Chart(document.getElementById('compareChart'), {
+function buildTrendChart(labels, datasets) {
+    if (trendChart) trendChart.destroy();
+    trendChart = new Chart(document.getElementById('monthlyTrendChart'), {
         type: 'bar',
         data: {
-            labels: cur.by_month.map(m => m.label),
-            datasets: [
-                { label: `${cur.year} Income`, data: cur.by_month.map(m => m.income), backgroundColor: 'rgba(52,211,153,0.8)',  borderRadius: 3, barPercentage: 0.45, categoryPercentage: 0.85 },
-                { label: `${pri.year} Income`, data: pri.by_month.map(m => m.income), backgroundColor: 'rgba(52,211,153,0.25)', borderRadius: 3, barPercentage: 0.45, categoryPercentage: 0.85 },
-                { label: `${cur.year} Spend`,  data: cur.by_month.map(m => m.spend),  backgroundColor: 'rgba(99,102,241,0.8)',  borderRadius: 3, barPercentage: 0.45, categoryPercentage: 0.85 },
-                { label: `${pri.year} Spend`,  data: pri.by_month.map(m => m.spend),  backgroundColor: 'rgba(99,102,241,0.25)', borderRadius: 3, barPercentage: 0.45, categoryPercentage: 0.85 },
-            ]
+            labels,
+            datasets: datasets.map(d => ({
+                label: d.label, data: d.data, backgroundColor: d.bg,
+                borderRadius:3, barPercentage:0.45, categoryPercentage:0.85
+            }))
         },
         options: {
-            responsive: true, maintainAspectRatio: false,
+            responsive:true, maintainAspectRatio:false,
             plugins: {
-                legend: { labels: { color: '#94a3b8', font: { family: 'DM Sans', size: 11 }, boxWidth: 12 } },
-                tooltip: { callbacks: { label: ctx => ` ${ctx.dataset.label}: $${ctx.parsed.y.toLocaleString(undefined, {minimumFractionDigits: 2})}` } }
+                legend: { labels:{ color:'#94a3b8', font:{ family:'DM Sans', size:11 }, boxWidth:12 } },
+                tooltip: { callbacks:{ label: ctx => ` ${ctx.dataset.label}: $${ctx.parsed.y.toLocaleString(undefined,{minimumFractionDigits:2})}` } }
             },
             scales: {
-                x: { ticks: { color: '#64748b', font: { size: 11 } }, grid: { display: false } },
-                y: { ticks: { color: '#64748b', callback: v => '$' + v.toLocaleString(), font: { size: 10 } }, grid: { color: 'rgba(148,163,184,0.08)' }, beginAtZero: true }
+                x: { ticks:{ color:'#64748b', font:{ size:11 } }, grid:{ display:false } },
+                y: { ticks:{ color:'#64748b', callback: v => '$'+v.toLocaleString(), font:{ size:10 } }, grid:{ color:'rgba(148,163,184,0.08)' }, beginAtZero:true }
             }
         }
     });
 }
 
-// ─── METHODOLOGY NOTE ─────────────────────────────
+// ─── PRIMARY TARGET CARD ──────────────────────────────
+function renderPrimaryTargetCard(pt, settings) {
+    if (!pt) return;
+    const onTrackBadge = pt.on_track
+        ? `<span class="status-badge badge-green">On track</span>`
+        : `<span class="status-badge badge-red">Off track</span>`;
+    const defaultNote = pt.is_default_target
+        ? `<span style="font-size:11px;color:var(--text-muted)">Default: break-even pace</span>`
+        : '';
+    const curNetCls = pt.current_month_net >= 0 ? 'positive' : 'negative';
+    const pacedCls  = pt.paced_month_net  >= 0 ? 'positive' : 'negative';
+    const yearCls   = pt.implied_yearend_net >= 0 ? 'positive' : 'negative';
+    const curVal    = settings && settings.monthly_net_target != null
+        ? settings.monthly_net_target.toFixed(2) : '';
+
+    document.getElementById('primaryTargetCard').innerHTML = `
+    <div class="target-card">
+        <div class="target-card-header">
+            <div>
+                <div class="target-card-title">Monthly Net Target</div>
+                ${defaultNote}
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+                ${onTrackBadge}
+            </div>
+        </div>
+        <div class="target-card-body">
+            <div>
+                <div class="target-stat-label">Target</div>
+                <div class="target-stat-value" style="color:var(--accent)">${fmtNet(pt.monthly_net_target)}</div>
+                <div style="font-size:11px;color:var(--text-muted);margin-top:2px">per month</div>
+            </div>
+            <div>
+                <div class="target-stat-label">This month so far</div>
+                <div class="target-stat-value ${curNetCls}">${pt.current_month_net >= 0 ? '+' : '−'}${fmt(pt.current_month_net)}</div>
+                <div style="font-size:11px;color:var(--text-muted);margin-top:2px">day ${pt.days_elapsed_in_month} of ${pt.days_in_month}</div>
+            </div>
+            <div>
+                <div class="target-stat-label">Month-end pace</div>
+                <div class="target-stat-value ${pacedCls}">${pt.paced_month_net >= 0 ? '+' : '−'}${fmt(pt.paced_month_net)}</div>
+                <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+                    Implied year-end: <span class="${yearCls}" style="font-family:'JetBrains Mono',monospace">${pt.implied_yearend_net >= 0 ? '+' : '−'}${fmt(pt.implied_yearend_net)}</span>
+                </div>
+            </div>
+        </div>
+        <div class="target-edit-row">
+            <span style="font-size:12px;color:var(--text-muted)">Set monthly target:</span>
+            <input type="number" id="targetInput" class="target-input" placeholder="e.g. 500" step="50" value="${curVal}">
+            <button class="target-save-btn" onclick="saveTarget()">Save</button>
+            <button class="target-reset-btn" onclick="resetTarget()">Reset to default</button>
+        </div>
+    </div>`;
+}
+
+async function saveTarget() {
+    const val = parseFloat(document.getElementById('targetInput').value);
+    if (isNaN(val)) return;
+    await fetch('/api/kpis/settings', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({monthly_net_target: val})
+    });
+    await loadKPIs(true);
+}
+
+async function resetTarget() {
+    await fetch('/api/kpis/settings', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({monthly_net_target: null})
+    });
+    cachedStatic = null;
+    await loadKPIs(true);
+}
+
+// ─── SECTION D: ACTION PANEL ──────────────────────────
+function renderActionPanel(ap) {
+    if (!ap) return;
+
+    const badgeCls = {
+        on_track:      'feasibility-on-track',
+        slight_stretch:'feasibility-stretch',
+        unlikely:      'feasibility-unlikely',
+    }[ap.feasibility] || 'feasibility-unlikely';
+
+    // Primary question
+    const trackMsg = ap.gap <= 0
+        ? `Your trailing monthly net of <strong>${fmtNet(ap.trailing_monthly_net)}</strong> already meets your <strong>${fmtNet(ap.monthly_net_target)}</strong> target.`
+        : `Your trailing monthly net is <strong>${fmtNet(ap.trailing_monthly_net)}</strong>. You need <strong>${fmtNet(ap.monthly_net_target)}</strong> to hit your target — a gap of <strong>$${Math.abs(ap.gap).toLocaleString('en-US',{minimumFractionDigits:2})}</strong>/month.`;
+
+    // Year-end question
+    const eoySign = ap.eoy_projected >= 0 ? '+' : '−';
+    const eoyMsg  = ap.breaks_even
+        ? `If current pace continues, you'll end the year at <strong><span class="positive">${eoySign}${fmt(ap.eoy_projected)}</span></strong> — on track to break even.`
+        : `If current pace continues, you'll end the year at <strong><span class="negative">${eoySign}${fmt(ap.eoy_projected)}</span></strong> — short of break-even.`;
+
+    // Levers (only show if there's a gap)
+    let leversHtml = '';
+    if (ap.gap > 0) {
+        leversHtml = `
+        <div style="margin-top:16px">
+            <div style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:10px">To close the gap, pick a lever:</div>
+            <div class="lever-grid">
+                <div class="lever-card">
+                    <div class="lever-label">Income only</div>
+                    <div class="lever-value">+${fmt(ap.levers.income_only)}/mo</div>
+                    <div class="lever-desc">Earn more, keep spend flat</div>
+                </div>
+                <div class="lever-card">
+                    <div class="lever-label">Spend only</div>
+                    <div class="lever-value">−${fmt(ap.levers.spend_only)}/mo</div>
+                    <div class="lever-desc">Cut spending, keep income flat</div>
+                </div>
+                <div class="lever-card">
+                    <div class="lever-label">Blended</div>
+                    <div class="lever-value">±${fmt(ap.levers.blended)}/mo</div>
+                    <div class="lever-desc">+${fmt(ap.levers.blended)} income &amp; −${fmt(ap.levers.blended)} spend</div>
+                </div>
+            </div>
+        </div>`;
+    }
+
+    document.getElementById('actionPanel').innerHTML = `
+    <div class="action-panel" style="margin-bottom:16px">
+        <div class="action-panel-header">
+            <h2 style="font-size:16px;font-weight:600">Action Panel</h2>
+            <span class="feasibility-badge ${badgeCls}">${ap.feasibility_label}</span>
+        </div>
+        <p class="action-message">${trackMsg}</p>
+        <p class="action-message">${eoyMsg}</p>
+        ${leversHtml}
+    </div>`;
+}
+
+// ─── METHODOLOGY NOTE ─────────────────────────────────
 function renderMethodologyNote(data) {
     const kpis = data.table_kpis;
+    const meta = kpis && kpis.meta ? kpis.meta : {};
     let body;
     if (currentMode === 'ytd') {
-        const meta = kpis && kpis.meta ? kpis.meta : {};
         body = `
-            <p style="margin-bottom:6px"><strong>YTD View</strong> — All averages derived from year-to-date totals divided by elapsed calendar time.</p>
-            <p style="margin-bottom:4px">Daily avg: YTD total ÷ ${meta.days_elapsed || '—'} elapsed days &nbsp;·&nbsp;
-               Weekly avg: ÷ ${meta.elapsed_weeks || '—'} weeks &nbsp;·&nbsp;
+            <p style="margin-bottom:6px"><strong>YTD Averages</strong> — all averages derived from year-to-date totals divided by elapsed calendar time.</p>
+            <p style="margin-bottom:4px">Daily avg: YTD total ÷ ${meta.days_elapsed||'—'} elapsed days &nbsp;·&nbsp;
+               Weekly avg: ÷ ${meta.elapsed_weeks||'—'} weeks &nbsp;·&nbsp;
                Monthly avg: ÷ ${meta.elapsed_months ? meta.elapsed_months.toFixed(2) : '—'} months &nbsp;·&nbsp;
                Quarterly avg: ÷ ${meta.elapsed_quarters ? meta.elapsed_quarters.toFixed(2) : '—'} quarters</p>
-            <p>EOY Pace: YTD total ÷ ${meta.days_elapsed || '—'} days × ${meta.days_in_year || 365}</p>`;
+            <p>EOY pace shown in top cards: YTD total ÷ ${meta.days_elapsed||'—'} days × ${meta.days_in_year||365}</p>`;
     } else {
-        const meta = kpis && kpis.meta ? kpis.meta : {};
         body = `
-            <p style="margin-bottom:6px"><strong>Trailing View</strong> — All averages from rolling recent windows, using calendar days.</p>
-            <p style="margin-bottom:4px">Daily avg: sum of trailing ${meta.trailing_daily_days || 28} calendar days ÷ ${meta.trailing_daily_days || 28} &nbsp;·&nbsp;
-               Weekly avg: avg of trailing ${meta.trailing_weekly_weeks || 4} complete weeks &nbsp;·&nbsp;
-               Monthly avg: avg of trailing ${meta.trailing_monthly_months || 3} complete months</p>
+            <p style="margin-bottom:6px"><strong>Trailing Averages</strong> — rolling recent windows using calendar days.</p>
+            <p style="margin-bottom:4px">Daily avg: trailing 28 calendar days ÷ 28 &nbsp;·&nbsp;
+               Weekly avg: avg of trailing 4 complete weeks &nbsp;·&nbsp;
+               Monthly avg: avg of trailing 3 complete months</p>
             <p>Annualized Trend: trailing monthly avg × 12</p>`;
     }
     document.getElementById('methodologyBody').innerHTML =
-        body + `<p style="margin-top:8px;color:var(--text-muted);font-size:12px">Switch modes using the toggle above to compare YTD pace vs recent run-rate.</p>`;
+        body + `<p style="margin-top:8px;color:var(--text-muted);font-size:12px">Use the toggle above to switch between YTD pace and recent run-rate.</p>`;
 }
 
 function toggleMethodology() {
@@ -322,7 +481,7 @@ function toggleMethodology() {
     toggle.textContent = body.classList.contains('hidden') ? 'Show' : 'Hide';
 }
 
-// ─── BOOT ─────────────────────────────────────────
+// ─── BOOT ─────────────────────────────────────────────
 init();
 </script>
 {% endblock %}

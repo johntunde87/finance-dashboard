@@ -84,6 +84,16 @@ def init_db():
         )
     ''')
 
+    # KPI settings — single-row table (id always = 1)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS kpi_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            monthly_net_target REAL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('INSERT OR IGNORE INTO kpi_settings (id, monthly_net_target) VALUES (1, NULL)')
+
     # Insert default category rules
     cursor.execute('SELECT COUNT(*) FROM category_rules')
     if cursor.fetchone()[0] == 0:
