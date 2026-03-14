@@ -94,6 +94,13 @@ def init_db():
     ''')
     cursor.execute('INSERT OR IGNORE INTO kpi_settings (id, monthly_net_target) VALUES (1, NULL)')
 
+    # Migrate: add target_cash_balance if not present
+    try:
+        cursor.execute('ALTER TABLE kpi_settings ADD COLUMN target_cash_balance REAL')
+        conn.commit()
+    except Exception:
+        pass  # column already exists
+
     # Insert default category rules
     cursor.execute('SELECT COUNT(*) FROM category_rules')
     if cursor.fetchone()[0] == 0:

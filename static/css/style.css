@@ -361,3 +361,102 @@ input:focus,select:focus { outline:none; border-color:var(--accent); }
     .kpi-grid { grid-template-columns:1fr; }
     .period-selector,.mode-bar { flex-wrap:wrap; }
 }
+
+/* ═══════════════════════════════════════════
+   DASHBOARD V2
+   ═══════════════════════════════════════════ */
+
+/* ─── Horizon custom range ─────────────────── */
+.db-custom-range { display:flex; gap:10px; align-items:flex-end; margin-bottom:16px; flex-wrap:wrap; }
+
+/* ─── Row label ────────────────────────────── */
+.db-row-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); margin-bottom:8px; margin-top:4px; }
+
+/* ─── KPI row (reuses .kpi-grid) ──────────── */
+.db-kpi-row { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:8px; }
+
+/* ─── Daily pace row ───────────────────────── */
+.db-pace-row { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:24px; }
+.db-pace-card { background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius); padding:14px 18px; }
+.db-pace-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); margin-bottom:3px; }
+.db-pace-value { font-family:'JetBrains Mono',monospace; font-size:20px; font-weight:600; }
+
+/* ─── Two / three column layouts ──────────── */
+.db-two-col   { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.db-three-col { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
+.db-two-stat  { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.db-forecast-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+
+/* ─── Generic metric blocks ────────────────── */
+.db-metric { margin-bottom:12px; }
+.db-metric:last-child { margin-bottom:0; }
+.db-metric-label { font-size:11px; color:var(--text-muted); margin-bottom:2px; }
+.db-metric-value { font-family:'JetBrains Mono',monospace; font-size:15px; font-weight:600; }
+.db-metric-value.lg { font-size:22px; }
+
+/* ─── Status badges ────────────────────────── */
+.db-status-badge { font-size:11px; font-weight:700; padding:3px 10px; border-radius:20px; text-transform:uppercase; letter-spacing:0.3px; }
+.db-status-green { background:var(--green-dim); color:var(--green); }
+.db-status-gold  { background:var(--gold-dim);  color:var(--gold); }
+.db-status-red   { background:var(--red-dim);   color:var(--red); }
+
+/* ─── Progress bar ─────────────────────────── */
+.db-progress-bar  { height:5px; background:var(--bg-primary); border-radius:3px; overflow:hidden; margin:4px 0; }
+.db-progress-fill { height:100%; border-radius:3px; transition:width 0.5s; min-width:2px; }
+.db-progress-fill.ahead   { background:var(--green); }
+.db-progress-fill.near    { background:var(--gold); }
+.db-progress-fill.behind  { background:var(--red); }
+.db-progress-fill.neutral { background:var(--accent); }
+
+/* ─── Highlight box (required income, etc.) ── */
+.db-highlight-box     { background:rgba(99,102,241,0.07); border:1px solid rgba(99,102,241,0.18); border-radius:var(--radius-sm); padding:12px 16px; }
+.db-highlight-label   { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:var(--accent); margin-bottom:4px; }
+.db-highlight-value   { font-family:'JetBrains Mono',monospace; font-size:24px; font-weight:700; color:var(--text-primary); }
+.db-highlight-unit    { font-family:'DM Sans',sans-serif; font-size:13px; font-weight:400; color:var(--text-muted); margin-left:2px; }
+.db-highlight-sub     { font-size:11px; color:var(--text-muted); margin-top:3px; }
+
+/* ─── Comparison rows ──────────────────────── */
+.db-cmp-row   { display:flex; justify-content:space-between; align-items:center; padding:7px 0; border-bottom:1px solid rgba(37,41,64,0.5); }
+.db-cmp-row:last-child { border-bottom:none; }
+.db-cmp-name  { font-size:13px; color:var(--text-secondary); }
+.db-cmp-vals  { display:flex; align-items:center; gap:10px; }
+.db-cmp-prior { font-size:11px; color:var(--text-muted); }
+.db-cmp-cur   { font-size:13px; }
+.db-delta     { font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:600; }
+
+/* ─── Category mini bars ───────────────────── */
+.db-cat-row         { display:flex; align-items:center; padding:5px 0; border-bottom:1px solid rgba(37,41,64,0.5); }
+.db-cat-row:last-child { border-bottom:none; }
+.db-mini-bar-track  { height:3px; background:var(--bg-primary); border-radius:2px; overflow:hidden; }
+.db-mini-bar-fill   { height:100%; background:var(--red); border-radius:2px; opacity:0.65; }
+
+/* ─── Cash target ──────────────────────────── */
+.db-target-row  { display:flex; gap:10px; align-items:flex-end; margin-bottom:14px; flex-wrap:wrap; }
+.db-target-input { background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text-primary); font-family:'JetBrains Mono',monospace; font-size:14px; padding:8px 12px; width:180px; }
+.db-target-input:focus { outline:none; border-color:var(--accent); }
+.db-target-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; }
+.db-unreachable { padding:10px 14px; background:var(--red-dim); border-radius:var(--radius-sm); color:var(--red); font-size:13px; font-weight:500; margin-top:8px; }
+
+/* ─── Goal setup ───────────────────────────── */
+.db-goal-setup { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; }
+.db-no-data    { color:var(--text-muted); font-size:13px; padding:4px 0 8px; }
+
+/* ─── Responsive ───────────────────────────── */
+@media (max-width:768px) {
+    .db-kpi-row      { grid-template-columns:repeat(2,1fr); gap:10px; }
+    .db-pace-row     { grid-template-columns:1fr; gap:10px; }
+    .db-two-col      { grid-template-columns:1fr; }
+    .db-three-col    { grid-template-columns:1fr; }
+    .db-two-stat     { grid-template-columns:1fr 1fr; }
+    .db-forecast-grid { grid-template-columns:1fr 1fr; }
+    .db-target-grid  { grid-template-columns:repeat(2,1fr); }
+    .db-pace-value   { font-size:18px; }
+    .db-highlight-value { font-size:20px; }
+}
+@media (max-width:480px) {
+    .db-kpi-row      { grid-template-columns:1fr; }
+    .db-two-stat     { grid-template-columns:1fr; }
+    .db-forecast-grid { grid-template-columns:1fr; }
+    .db-target-grid  { grid-template-columns:1fr 1fr; }
+    .db-target-input { width:100%; }
+}

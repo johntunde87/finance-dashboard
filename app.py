@@ -35,6 +35,34 @@ def get_all_categories(conn):
     ).fetchall()
     return [r['category'] for r in rows]
 
+def get_current_balance(conn):
+    """
+    Correct balance for Chase CSV (newest-first file order):
+    1. Anchor = last non-null balance row by (posting_date DESC, id ASC).
+       Within the same date, lower id was imported first from the file,
+       meaning it is the most-recent transaction of that day in a newest-first CSV.
+    2. Adjustment = sum of all blank-balance rows that are chronologically NEWER
+       than the anchor (later date, or same date with a lower id).
+    """
+    row = conn.execute(
+        'SELECT id, posting_date, balance FROM transactions WHERE balance IS NOT NULL '
+        'ORDER BY posting_date DESC, id ASC LIMIT 1'
+    ).fetchone()
+    if not row:
+        return 0.0
+    anchor_id   = row['id']
+    anchor_date = row['posting_date']
+    anchor_bal  = row['balance']
+
+    adj = conn.execute('''
+        SELECT COALESCE(SUM(amount), 0) FROM transactions
+        WHERE balance IS NULL
+          AND (posting_date > ? OR (posting_date = ? AND id < ?))
+    ''', (anchor_date, anchor_date, anchor_id)).fetchone()[0]
+
+    return round(anchor_bal + adj, 2)
+
+
 def get_summary_stats(conn, start_date=None, end_date=None):
     df = ""
     p = []
@@ -44,8 +72,7 @@ def get_summary_stats(conn, start_date=None, end_date=None):
     total_income = conn.execute(f'SELECT COALESCE(SUM(amount),0) FROM transactions WHERE amount > 0 AND is_internal_transfer=0{df}', p).fetchone()[0]
     total_expenses = abs(conn.execute(f'SELECT COALESCE(SUM(amount),0) FROM transactions WHERE amount < 0 AND is_internal_transfer=0{df}', p).fetchone()[0])
     net_savings = total_income - total_expenses
-    row = conn.execute('SELECT balance FROM transactions WHERE balance IS NOT NULL ORDER BY posting_date DESC, id DESC LIMIT 1').fetchone()
-    current_balance = row[0] if row else 0
+    current_balance = get_current_balance(conn)
     txn_count = conn.execute(f'SELECT COUNT(*) FROM transactions WHERE is_internal_transfer=0{df}', p).fetchone()[0]
 
     row = conn.execute(f'SELECT MIN(posting_date), MAX(posting_date) FROM transactions WHERE amount < 0 AND is_internal_transfer=0{df}', p).fetchone()
@@ -256,8 +283,18 @@ def compute_trailing_table_kpis(conn):
     }
 
 def get_kpi_settings(conn):
-    row = conn.execute('SELECT monthly_net_target FROM kpi_settings WHERE id=1').fetchone()
-    return {'monthly_net_target': row['monthly_net_target'] if row else None}
+    try:
+        row = conn.execute('SELECT monthly_net_target, target_cash_balance FROM kpi_settings WHERE id=1').fetchone()
+        if row:
+            return {'monthly_net_target': row['monthly_net_target'], 'target_cash_balance': row['target_cash_balance']}
+    except Exception:
+        try:
+            row = conn.execute('SELECT monthly_net_target FROM kpi_settings WHERE id=1').fetchone()
+            if row:
+                return {'monthly_net_target': row['monthly_net_target'], 'target_cash_balance': None}
+        except Exception:
+            pass
+    return {'monthly_net_target': None, 'target_cash_balance': None}
 
 
 def compute_primary_target(conn, monthly_net_target, ytd_net, months_remaining):
@@ -475,45 +512,7 @@ def get_month_transactions(conn, year, month, mode='all', categories_filter='', 
 
 @app.route('/')
 def dashboard():
-    conn = get_db()
-    today = datetime.now()
-    period = request.args.get('period', 'all')
-    start_date = request.args.get('start_date')
-    end_date = request.args.get('end_date')
-    if period == 'month':
-        start_date = today.replace(day=1).strftime('%Y-%m-%d'); end_date = today.strftime('%Y-%m-%d')
-    elif period == 'quarter':
-        qs = ((today.month-1)//3)*3+1; start_date = today.replace(month=qs, day=1).strftime('%Y-%m-%d'); end_date = today.strftime('%Y-%m-%d')
-    elif period == 'year':
-        start_date = today.replace(month=1, day=1).strftime('%Y-%m-%d'); end_date = today.strftime('%Y-%m-%d')
-
-    stats = get_summary_stats(conn, start_date, end_date)
-    categories = get_category_breakdown(conn, start_date, end_date)
-    trend = get_spending_trend(conn)
-    recurring = get_recurring_expenses(conn)
-    goals = [dict(r) for r in conn.execute('SELECT * FROM savings_goals WHERE is_active=1 ORDER BY created_at DESC').fetchall()]
-    for goal in goals:
-        remaining = goal['target_amount'] - goal['current_amount']
-        if goal['target_date']:
-            target = datetime.strptime(goal['target_date'], '%Y-%m-%d')
-            ml = max((target.year-today.year)*12+target.month-today.month, 1)
-            goal['monthly_needed'] = remaining/ml
-            goal['progress_pct'] = min(round((goal['current_amount']/goal['target_amount'])*100,1), 100)
-            goal['months_left'] = ml
-            if stats['total_expenses'] > 0 and trend:
-                goal['projected_monthly_income'] = stats['total_expenses']/max(len(trend),1) + goal['monthly_needed']
-            else:
-                goal['projected_monthly_income'] = goal['monthly_needed']
-        else:
-            goal['monthly_needed'] = None
-            goal['progress_pct'] = min(round((goal['current_amount']/goal['target_amount'])*100,1),100) if goal['target_amount']>0 else 0
-            goal['months_left'] = None; goal['projected_monthly_income'] = None
-
-    recent = [dict(r) for r in conn.execute('SELECT * FROM transactions ORDER BY posting_date DESC, id DESC LIMIT 10').fetchall()]
-    uncat = conn.execute("SELECT COUNT(*) FROM transactions WHERE category='Uncategorized'").fetchone()[0]
-    conn.close()
-    return render_template('dashboard.html', stats=stats, categories=categories, trend=json.dumps(trend),
-        recurring=recurring, goals=goals, recent=recent, uncategorized_count=uncat, period=period, start_date=start_date, end_date=end_date)
+    return render_template('dashboard.html')
 
 @app.route('/weekly')
 def weekly():
@@ -761,13 +760,383 @@ def api_kpis_settings():
     data = request.get_json() or {}
     mnt  = data.get('monthly_net_target')  # float or None (None = reset to default)
     conn = get_db()
+    # Use UPDATE to preserve target_cash_balance
     conn.execute(
-        'INSERT OR REPLACE INTO kpi_settings (id, monthly_net_target, updated_at) VALUES (1, ?, CURRENT_TIMESTAMP)',
+        'UPDATE kpi_settings SET monthly_net_target=?, updated_at=CURRENT_TIMESTAMP WHERE id=1',
         (mnt,)
     )
     conn.commit()
     conn.close()
     return jsonify({'success': True, 'monthly_net_target': mnt})
+
+
+# ─── DASHBOARD V2 HELPERS ────────────────────────────────────
+
+def resolve_horizon(horizon, start_param, end_param):
+    """Returns (start_date_str, end_date_str, days_count, label)."""
+    today = date.today()
+    if horizon == '7d':
+        s = today - timedelta(days=6)
+        return s.isoformat(), today.isoformat(), 7, 'Last 7 Days'
+    elif horizon == '30d':
+        s = today - timedelta(days=29)
+        return s.isoformat(), today.isoformat(), 30, 'Last 30 Days'
+    elif horizon == '90d':
+        s = today - timedelta(days=89)
+        return s.isoformat(), today.isoformat(), 90, 'Last 90 Days'
+    elif horizon == 'mtd':
+        s = date(today.year, today.month, 1)
+        days = today.day
+        return s.isoformat(), today.isoformat(), max(days, 1), 'Month to Date'
+    elif horizon == 'ytd':
+        s = date(today.year, 1, 1)
+        days = (today - s).days + 1
+        return s.isoformat(), today.isoformat(), max(days, 1), 'Year to Date'
+    elif horizon == 'custom' and start_param and end_param:
+        try:
+            d1 = date.fromisoformat(start_param)
+            d2 = date.fromisoformat(end_param)
+            days = (d2 - d1).days + 1
+            label = f'{d1.strftime("%b %d")} \u2013 {d2.strftime("%b %d, %Y")}'
+            return start_param, end_param, max(days, 1), label
+        except Exception:
+            pass
+    # Default: last 30 days
+    s = today - timedelta(days=29)
+    return s.isoformat(), today.isoformat(), 30, 'Last 30 Days'
+
+
+def trend_bucket(horizon, days):
+    if horizon in ('7d', '30d'):
+        return 'daily'
+    elif horizon == '90d':
+        return 'weekly'
+    elif horizon == 'ytd':
+        return 'monthly'
+    else:  # custom
+        if days <= 31:
+            return 'daily'
+        elif days <= 90:
+            return 'weekly'
+        return 'monthly'
+
+
+def get_dashboard_trend(conn, start_date, end_date, bucket):
+    """Return bucketed trend data with one SQL query per bucket type."""
+    from collections import defaultdict
+    start = date.fromisoformat(start_date)
+    end   = date.fromisoformat(end_date)
+
+    # Single query fetching all days in range
+    rows = conn.execute('''
+        SELECT posting_date,
+               COALESCE(SUM(CASE WHEN amount>0 THEN amount ELSE 0 END),0) AS income,
+               COALESCE(SUM(CASE WHEN amount<0 THEN ABS(amount) ELSE 0 END),0) AS spend
+        FROM transactions
+        WHERE posting_date>=? AND posting_date<=? AND is_internal_transfer=0
+        GROUP BY posting_date ORDER BY posting_date
+    ''', (start_date, end_date)).fetchall()
+
+    if bucket == 'daily':
+        row_map = {r['posting_date']: (r['income'], r['spend']) for r in rows}
+        data = []
+        cur = start
+        while cur <= end:
+            ds = cur.isoformat()
+            inc, spd = row_map.get(ds, (0, 0))
+            data.append({'label': cur.strftime('%b %d'), 'income': round(inc, 2),
+                         'spend': round(spd, 2), 'net': round(inc - spd, 2)})
+            cur += timedelta(days=1)
+        return data
+
+    elif bucket == 'weekly':
+        week_data = defaultdict(lambda: {'income': 0.0, 'spend': 0.0})
+        for r in rows:
+            d = date.fromisoformat(r['posting_date'])
+            ws = get_monday(d)
+            week_data[ws]['income'] += r['income']
+            week_data[ws]['spend']  += r['spend']
+        data = []
+        for ws in sorted(week_data.keys()):
+            inc = week_data[ws]['income']
+            spd = week_data[ws]['spend']
+            data.append({'label': ws.strftime('%b %d'), 'income': round(inc, 2),
+                         'spend': round(spd, 2), 'net': round(inc - spd, 2)})
+        return data
+
+    else:  # monthly
+        month_data = defaultdict(lambda: {'income': 0.0, 'spend': 0.0})
+        for r in rows:
+            mo = r['posting_date'][:7]  # YYYY-MM
+            month_data[mo]['income'] += r['income']
+            month_data[mo]['spend']  += r['spend']
+        data = []
+        for mo in sorted(month_data.keys()):
+            y, m = mo.split('-')
+            inc = month_data[mo]['income']
+            spd = month_data[mo]['spend']
+            label = datetime(int(y), int(m), 1).strftime('%b %Y')
+            data.append({'label': label, 'income': round(inc, 2),
+                         'spend': round(spd, 2), 'net': round(inc - spd, 2)})
+        return data
+
+
+def get_comparison_periods(horizon, start_date, end_date, days):
+    """Returns (prior_start, prior_end, label)."""
+    today = date.today()
+    s = date.fromisoformat(start_date)
+
+    if horizon in ('7d', '30d', '90d', 'custom'):
+        prior_end   = (s - timedelta(days=1)).isoformat()
+        prior_start = (s - timedelta(days=days)).isoformat()
+        label = f'Prior {days} Days'
+        return prior_start, prior_end, label
+
+    elif horizon == 'mtd':
+        elapsed = today.day
+        pm_m = today.month - 1 if today.month > 1 else 12
+        pm_y = today.year if today.month > 1 else today.year - 1
+        pm_total = calendar.monthrange(pm_y, pm_m)[1]
+        prior_start = date(pm_y, pm_m, 1).isoformat()
+        prior_end   = date(pm_y, pm_m, min(elapsed, pm_total)).isoformat()
+        label = f'{date(pm_y, pm_m, 1).strftime("%b %Y")} (day 1\u2013{min(elapsed, pm_total)})'
+        return prior_start, prior_end, label
+
+    else:  # ytd
+        py = today.year - 1
+        try:
+            pe = date(py, today.month, today.day)
+        except ValueError:
+            pe = date(py, today.month, calendar.monthrange(py, today.month)[1])
+        return date(py, 1, 1).isoformat(), pe.isoformat(), f'YTD {py}'
+
+
+def compute_monthly_goal_tracking(conn, monthly_net_target):
+    """Always based on current calendar month, not the selected horizon."""
+    today = date.today()
+    month_start = date(today.year, today.month, 1).isoformat()
+    month_end   = today.isoformat()
+    days_in_month  = calendar.monthrange(today.year, today.month)[1]
+    days_elapsed   = today.day
+    days_remaining = days_in_month - days_elapsed
+
+    cur_inc = conn.execute(
+        'SELECT COALESCE(SUM(amount),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount>0 AND is_internal_transfer=0',
+        (month_start, month_end)
+    ).fetchone()[0]
+    cur_spd = conn.execute(
+        'SELECT COALESCE(SUM(ABS(amount)),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount<0 AND is_internal_transfer=0',
+        (month_start, month_end)
+    ).fetchone()[0]
+    actual_net = cur_inc - cur_spd
+
+    avg_daily_spend_month = cur_spd / days_elapsed if days_elapsed > 0 else 0.0
+    avg_daily_net_month   = actual_net / days_elapsed if days_elapsed > 0 else 0.0
+    projected_eom_net     = round(avg_daily_net_month * days_in_month, 2)
+
+    goal          = None
+    progress_pct  = None
+    expected_net  = None
+    pace_status   = None
+    req_daily_net = None
+    req_daily_inc = None
+
+    if monthly_net_target is not None:
+        goal = round(monthly_net_target, 2)
+        progress_pct  = round(actual_net / monthly_net_target * 100, 1) if monthly_net_target != 0 else None
+        expected_net  = round(monthly_net_target * days_elapsed / days_in_month, 2)
+        if days_remaining > 0:
+            req_daily_net = round((monthly_net_target - actual_net) / days_remaining, 2)
+            proj_rem_spd  = avg_daily_spend_month * days_remaining
+            req_daily_inc = round((max(0.0, monthly_net_target - actual_net) + proj_rem_spd) / days_remaining, 2)
+        # Pace status: ahead if actual >= expected × 1.05, near >= 0.85, else behind
+        if expected_net is not None:
+            if actual_net >= expected_net * 1.05:
+                pace_status = 'ahead'
+            elif actual_net >= expected_net * 0.85:
+                pace_status = 'near'
+            else:
+                pace_status = 'behind'
+
+    return {
+        'goal':                    goal,
+        'actual_net':              round(actual_net, 2),
+        'actual_income':           round(cur_inc, 2),
+        'actual_spend':            round(cur_spd, 2),
+        'progress_pct':            progress_pct,
+        'expected_net_today':      expected_net,
+        'pace_status':             pace_status,
+        'projected_eom_net':       projected_eom_net,
+        'required_daily_net':      req_daily_net,
+        'required_daily_income':   req_daily_inc,
+        'days_elapsed':            days_elapsed,
+        'days_in_month':           days_in_month,
+        'days_remaining':          days_remaining,
+        'avg_daily_spend_month':   round(avg_daily_spend_month, 2),
+        'month_label':             today.strftime('%B %Y'),
+    }
+
+
+@app.route('/api/dashboard')
+def api_dashboard():
+    conn = get_db()
+    horizon     = request.args.get('horizon', '30d')
+    start_param = request.args.get('start', '')
+    end_param   = request.args.get('end', '')
+
+    start_date, end_date, days, period_label = resolve_horizon(horizon, start_param, end_param)
+
+    # ── KPIs
+    income = conn.execute(
+        'SELECT COALESCE(SUM(amount),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount>0 AND is_internal_transfer=0',
+        (start_date, end_date)
+    ).fetchone()[0]
+    spend = conn.execute(
+        'SELECT COALESCE(SUM(ABS(amount)),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount<0 AND is_internal_transfer=0',
+        (start_date, end_date)
+    ).fetchone()[0]
+    net          = income - spend
+    savings_rate = round(net / income * 100, 1) if income > 0 else 0.0
+
+    # ── Daily pace
+    avg_daily_income = round(income / days, 2)
+    avg_daily_spend  = round(spend  / days, 2)
+    avg_daily_net    = round(net    / days, 2)
+
+    # ── Cash position  (current balance never changes with horizon)
+    current_balance = get_current_balance(conn)
+
+    # Net change = ending_balance - starting_balance over a fixed 30-day window
+    # Anchored to max(posting_date) in dataset, not system clock
+    ref_row  = conn.execute('SELECT MAX(posting_date) FROM transactions').fetchone()
+    ref_date = date.fromisoformat(ref_row[0]) if ref_row[0] else date.today()
+    l30_end   = ref_date.isoformat()
+    l30_start = (ref_date - timedelta(days=29)).isoformat()
+
+    # Implied balance just before the window start: last non-null balance before l30_start
+    # plus any blank-balance transactions between that anchor and l30_start
+    pre_anchor = conn.execute(
+        'SELECT id, posting_date, balance FROM transactions '
+        'WHERE balance IS NOT NULL AND posting_date < ? '
+        'ORDER BY posting_date DESC, id ASC LIMIT 1',
+        (l30_start,)
+    ).fetchone()
+    if pre_anchor:
+        pre_adj = conn.execute(
+            'SELECT COALESCE(SUM(amount),0) FROM transactions '
+            'WHERE balance IS NULL AND posting_date < ? '
+            '  AND (posting_date > ? OR (posting_date = ? AND id < ?))',
+            (l30_start, pre_anchor['posting_date'], pre_anchor['posting_date'], pre_anchor['id'])
+        ).fetchone()[0]
+        starting_balance = round(pre_anchor['balance'] + pre_adj, 2)
+    else:
+        starting_balance = 0.0
+
+    net_change = round(current_balance - starting_balance, 2)
+
+    r3m = compute_rolling_3month_avg(conn)
+    avg_monthly_spend = r3m['avg_monthly']['spend']
+    runway_months = round(current_balance / avg_monthly_spend, 1) if avg_monthly_spend > 0 else None
+
+    # ── Forecast (based on selected horizon daily averages × 30/365)
+    projected_monthly_income = round(avg_daily_income * 30, 2)
+    projected_monthly_spend  = round(avg_daily_spend  * 30, 2)
+    projected_monthly_net    = round(avg_daily_net    * 30, 2)
+    projected_annual_net     = round(avg_daily_net    * 365, 2)
+
+    # ── Trend chart
+    bucket     = trend_bucket(horizon, days)
+    trend_data = get_dashboard_trend(conn, start_date, end_date, bucket)
+
+    # ── Comparison
+    prior_start, prior_end, prior_label = get_comparison_periods(horizon, start_date, end_date, days)
+    prior_income = conn.execute(
+        'SELECT COALESCE(SUM(amount),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount>0 AND is_internal_transfer=0',
+        (prior_start, prior_end)
+    ).fetchone()[0]
+    prior_spend = conn.execute(
+        'SELECT COALESCE(SUM(ABS(amount)),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount<0 AND is_internal_transfer=0',
+        (prior_start, prior_end)
+    ).fetchone()[0]
+    prior_net = prior_income - prior_spend
+
+    # ── Spending breakdown (top 5 expense categories)
+    breakdown_rows = conn.execute(
+        '''SELECT category, SUM(ABS(amount)) as amount, COUNT(*) as count
+           FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount<0 AND is_internal_transfer=0
+           GROUP BY category ORDER BY amount DESC LIMIT 5''',
+        (start_date, end_date)
+    ).fetchall()
+    spending_breakdown = [{'category': r['category'], 'amount': round(r['amount'], 2), 'count': r['count']} for r in breakdown_rows]
+
+    # ── Monthly goal tracking (always current calendar month)
+    settings     = get_kpi_settings(conn)
+    monthly_goal = compute_monthly_goal_tracking(conn, settings.get('monthly_net_target'))
+
+    conn.close()
+    return jsonify({
+        'horizon': horizon,
+        'period': {
+            'start': start_date, 'end': end_date,
+            'days': days, 'label': period_label,
+        },
+        'kpis': {
+            'income': round(income, 2), 'spend': round(spend, 2),
+            'net': round(net, 2), 'savings_rate': savings_rate,
+        },
+        'daily_pace': {
+            'avg_daily_income': avg_daily_income,
+            'avg_daily_spend':  avg_daily_spend,
+            'avg_daily_net':    avg_daily_net,
+        },
+        'monthly_goal': monthly_goal,
+        'forecast': {
+            'projected_monthly_income': projected_monthly_income,
+            'projected_monthly_spend':  projected_monthly_spend,
+            'projected_monthly_net':    projected_monthly_net,
+            'projected_annual_net':     projected_annual_net,
+            'label': f'Based on {period_label}',
+        },
+        'trend': {'bucket': bucket, 'data': trend_data},
+        'comparison': {
+            'current_label': period_label,
+            'prior_label':   prior_label,
+            'current': {'income': round(income, 2),       'spend': round(spend, 2),       'net': round(net, 2)},
+            'prior':   {'income': round(prior_income, 2), 'spend': round(prior_spend, 2), 'net': round(prior_net, 2)},
+            'deltas':  {
+                'income': round(income - prior_income, 2),
+                'spend':  round(spend  - prior_spend,  2),
+                'net':    round(net    - prior_net,    2),
+            },
+        },
+        'spending_breakdown': spending_breakdown,
+        'cash_position': {
+            'current_balance':  round(current_balance, 2),
+            'net_change':       net_change,
+            'avg_monthly_spend': round(avg_monthly_spend, 2),
+            'runway_months':    runway_months,
+        },
+        'settings': {
+            'monthly_net_target':  settings.get('monthly_net_target'),
+            'target_cash_balance': settings.get('target_cash_balance'),
+        },
+    })
+
+
+@app.route('/api/dashboard/settings', methods=['POST'])
+def api_dashboard_settings():
+    data = request.get_json() or {}
+    conn = get_db()
+    tcb = data.get('target_cash_balance', '__unchanged__')
+    if tcb != '__unchanged__':
+        conn.execute(
+            'UPDATE kpi_settings SET target_cash_balance=?, updated_at=CURRENT_TIMESTAMP WHERE id=1',
+            (tcb,)
+        )
+        conn.commit()
+    row = conn.execute('SELECT monthly_net_target, target_cash_balance FROM kpi_settings WHERE id=1').fetchone()
+    conn.close()
+    return jsonify({'success': True, 'settings': dict(row) if row else {}})
 
 
 if __name__ == '__main__':

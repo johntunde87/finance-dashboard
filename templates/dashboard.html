@@ -1,104 +1,577 @@
 {% extends "base.html" %}
 {% block title %}Dashboard — MoneyMap{% endblock %}
 {% block content %}
+
 <div class="page-header">
     <h1>Dashboard</h1>
-    <div class="period-selector">
-        <a href="?period=month" class="period-btn {% if period == 'month' %}active{% endif %}">Month</a>
-        <a href="?period=quarter" class="period-btn {% if period == 'quarter' %}active{% endif %}">Quarter</a>
-        <a href="?period=year" class="period-btn {% if period == 'year' %}active{% endif %}">Year</a>
-        <a href="?period=all" class="period-btn {% if period == 'all' %}active{% endif %}">All</a>
+    <div id="horizonBar" class="period-selector">
+        <button class="period-btn" data-h="7d">7 Days</button>
+        <button class="period-btn active" data-h="30d">30 Days</button>
+        <button class="period-btn" data-h="90d">90 Days</button>
+        <button class="period-btn" data-h="mtd">Month to Date</button>
+        <button class="period-btn" data-h="ytd">Year to Date</button>
+        <button class="period-btn" data-h="custom">Custom</button>
     </div>
 </div>
-<div class="kpi-grid">
-    <div class="kpi-card"><div class="kpi-label">Current Balance</div>
-        <div class="kpi-value {% if stats.current_balance >= 0 %}positive{% else %}negative{% endif %}">${{ "%.2f"|format(stats.current_balance) }}</div>
-        <div class="kpi-sub">Last updated from CSV</div></div>
-    <div class="kpi-card"><div class="kpi-label">Total Income</div>
-        <div class="kpi-value positive">${{ "%.2f"|format(stats.total_income) }}</div>
-        <div class="kpi-sub">{{ stats.txn_count }} transactions</div></div>
-    <div class="kpi-card"><div class="kpi-label">Total Expenses</div>
-        <div class="kpi-value negative">${{ "%.2f"|format(stats.total_expenses) }}</div>
-        <div class="kpi-sub">${{ "%.2f"|format(stats.daily_avg_spend) }}/day avg</div></div>
-    <div class="kpi-card {% if stats.net_savings >= 0 %}card-accent-green{% else %}card-accent-red{% endif %}">
-        <div class="kpi-label">Net Savings</div>
-        <div class="kpi-value {% if stats.net_savings >= 0 %}positive{% else %}negative{% endif %}">${{ "%.2f"|format(stats.net_savings) }}</div>
-        <div class="kpi-sub">Income − Expenses</div></div>
+
+<!-- Custom date range (shown only when Custom is selected) -->
+<div id="customRangeRow" class="db-custom-range hidden">
+    <div class="filter-group" style="flex:none">
+        <label>Start</label>
+        <input type="date" id="customStart">
+    </div>
+    <div class="filter-group" style="flex:none">
+        <label>End</label>
+        <input type="date" id="customEnd">
+    </div>
+    <div style="display:flex;align-items:flex-end">
+        <button class="btn btn-primary btn-sm" onclick="applyCustomRange()">Apply</button>
+    </div>
 </div>
-{% if goals %}
-<div class="section">
-    <div class="section-header"><h2>Savings Goals</h2><a href="{{ url_for('goals') }}" class="link-btn">Manage →</a></div>
-    <div class="goals-grid">
-    {% for goal in goals %}
-    <div class="goal-card">
-        <div class="goal-header"><span class="goal-name">{{ goal.name }}</span>
-            {% if goal.get('status') == 'on_track' %}<span class="status-badge badge-green">On Track</span>
-            {% elif goal.get('status') == 'behind' %}<span class="status-badge badge-red">Behind</span>
-            {% elif goal.get('status') == 'complete' %}<span class="status-badge badge-gold">Complete!</span>{% endif %}
+
+<!-- Loading / error state -->
+<div id="loadingState" class="empty-state" style="padding:60px 0">Loading dashboard…</div>
+
+<!-- Main dashboard (hidden while loading) -->
+<div id="dashContent" class="hidden">
+
+    <!-- ── KPI ROW ── -->
+    <div class="db-kpi-row" id="kpiRow"></div>
+
+    <!-- ── DAILY PACE ROW ── -->
+    <div class="db-row-label">Daily Pace · <span id="paceHorizonLabel"></span></div>
+    <div class="db-pace-row" id="paceRow"></div>
+
+    <!-- ── MONTHLY GOAL + FORECAST ── -->
+    <div class="db-two-col" style="margin-bottom:14px">
+        <div id="monthlyGoalCard"></div>
+        <div id="forecastCard"></div>
+    </div>
+
+    <!-- ── TREND CHART ── -->
+    <div class="section" style="margin-bottom:14px">
+        <div class="section-header" style="margin-bottom:14px">
+            <h2>Trend</h2>
+            <span class="kpi-sub" id="trendMeta"></span>
         </div>
-        <div class="progress-container"><div class="progress-bar"><div class="progress-fill" style="width:{{ goal.progress_pct }}%"></div></div>
-            <div class="progress-text"><span>${{ "%.0f"|format(goal.current_amount) }} / ${{ "%.0f"|format(goal.target_amount) }}</span><span>{{ goal.progress_pct }}%</span></div></div>
-        {% if goal.monthly_needed %}
-        <div class="goal-projection">
-            <div class="projection-item"><span class="proj-label">Need/mo</span><span class="proj-value">${{ "%.0f"|format(goal.monthly_needed) }}</span></div>
-            {% if goal.projected_monthly_income %}<div class="projection-item"><span class="proj-label">Target income/mo</span><span class="proj-value">${{ "%.0f"|format(goal.projected_monthly_income) }}</span></div>{% endif %}
-            {% if goal.months_left %}<div class="projection-item"><span class="proj-label">Months left</span><span class="proj-value">{{ goal.months_left }}</span></div>{% endif %}
+        <div style="position:relative;height:240px">
+            <canvas id="trendChart"></canvas>
         </div>
-        {% endif %}
     </div>
-    {% endfor %}
+
+    <!-- ── COMPARISON + SPENDING + CASH POSITION ── -->
+    <div class="db-three-col" style="margin-bottom:14px">
+        <div id="comparisonCard"></div>
+        <div id="spendingCard"></div>
+        <div id="cashPositionCard"></div>
     </div>
+
+    <!-- ── CASH TARGET TRACKER ── -->
+    <div id="cashTargetCard"></div>
+
 </div>
-{% endif %}
-<div class="charts-grid">
-    <div class="chart-card"><h3>Income vs Expenses</h3><canvas id="trendChart"></canvas></div>
-    <div class="chart-card"><h3>Spending by Category</h3><canvas id="categoryChart"></canvas></div>
-</div>
-<div class="bottom-grid">
-    <div class="section">
-        <div class="section-header"><h2>Recent Transactions</h2><a href="{{ url_for('transactions') }}" class="link-btn">View All →</a></div>
-        {% if uncategorized_count > 0 %}<div class="alert alert-warning">{{ uncategorized_count }} uncategorized. <a href="{{ url_for('transactions', category='Uncategorized') }}">Review →</a></div>{% endif %}
-        <div class="table-wrapper"><table class="txn-table"><thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="text-right">Amount</th></tr></thead>
-        <tbody>{% for txn in recent %}<tr>
-            <td class="mono">{{ txn.posting_date }}</td><td class="desc-cell" title="{{ txn.description }}">{{ txn.description[:50] }}</td>
-            <td><span class="cat-badge">{{ txn.category }}</span></td>
-            <td class="text-right mono {% if txn.amount >= 0 %}positive{% else %}negative{% endif %}">{{ "$%.2f"|format(txn.amount) }}</td>
-        </tr>{% endfor %}</tbody></table></div>
-    </div>
-    <div class="section">
-        <div class="section-header"><h2>Recurring Expenses</h2></div>
-        <div class="table-wrapper"><table class="txn-table"><thead><tr><th>Description</th><th>Category</th><th class="text-right">Avg</th><th class="text-right">Total</th><th class="text-center">#</th></tr></thead>
-        <tbody>{% for r in recurring[:10] %}<tr>
-            <td class="desc-cell" title="{{ r.description }}">{{ r.description[:40] }}</td>
-            <td><span class="cat-badge">{{ r.category }}</span></td>
-            <td class="text-right mono">${{ "%.2f"|format(r.avg_amount) }}</td>
-            <td class="text-right mono negative">${{ "%.2f"|format(r.total_amount) }}</td>
-            <td class="text-center">{{ r.occurrences }}</td>
-        </tr>{% endfor %}</tbody></table></div>
-    </div>
-</div>
+
 {% endblock %}
 {% block scripts %}
 <script>
-const trendData = {{ trend|safe }};
-if (trendData.length > 0) {
-    new Chart(document.getElementById('trendChart'), {
-        type: 'bar', data: { labels: trendData.map(d => d.month), datasets: [
-            { label: 'Income', data: trendData.map(d => d.income), backgroundColor: 'rgba(52,211,153,0.8)', borderRadius: 4 },
-            { label: 'Expenses', data: trendData.map(d => d.expenses), backgroundColor: 'rgba(248,113,113,0.8)', borderRadius: 4 }
-        ]}, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { labels: { color: '#94a3b8', font: { family: 'DM Sans' } } } },
-            scales: { x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(148,163,184,0.08)' } },
-                y: { ticks: { color: '#64748b', callback: v => '$'+v.toLocaleString() }, grid: { color: 'rgba(148,163,184,0.08)' } } } }
+// ─── State ────────────────────────────────────────────────────
+const state = { horizon: '30d', customStart: null, customEnd: null, data: null, chart: null };
+
+// ─── Utilities ───────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+function fmt(v) {
+    return '$' + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function fmtNet(v) {
+    if (v < 0) return '\u2212$' + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    return '$' + v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function fmtDelta(v) {
+    const abs = Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    return (v >= 0 ? '+$' : '\u2212$') + abs;
+}
+function netClass(v) { return v >= 0 ? 'positive' : 'negative'; }
+
+// ─── Fetch & Render ───────────────────────────────────────────
+async function fetchDashboard() {
+    $('loadingState').classList.remove('hidden');
+    $('dashContent').classList.add('hidden');
+
+    let url = `/api/dashboard?horizon=${state.horizon}`;
+    if (state.horizon === 'custom' && state.customStart && state.customEnd) {
+        url += `&start=${state.customStart}&end=${state.customEnd}`;
+    }
+    try {
+        const r = await fetch(url);
+        state.data = await r.json();
+        renderAll();
+        $('loadingState').classList.add('hidden');
+        $('dashContent').classList.remove('hidden');
+    } catch(e) {
+        $('loadingState').textContent = 'Failed to load dashboard data.';
+    }
+}
+
+function renderAll() {
+    const d = state.data;
+    renderKPIs(d);
+    renderPace(d);
+    renderMonthlyGoal(d);
+    renderForecast(d);
+    renderTrend(d);
+    renderComparison(d);
+    renderSpending(d);
+    renderCashPosition(d);
+    renderCashTarget(d);
+}
+
+// ─── KPI Row ─────────────────────────────────────────────────
+function renderKPIs(d) {
+    const k = d.kpis;
+    const srClass = k.savings_rate >= 0 ? 'positive' : 'negative';
+    $('kpiRow').innerHTML = `
+        <div class="kpi-card">
+            <div class="kpi-label">Income</div>
+            <div class="kpi-value positive">${fmt(k.income)}</div>
+            <div class="kpi-sub">${esc(d.period.label)}</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Spend</div>
+            <div class="kpi-value negative">${fmt(k.spend)}</div>
+            <div class="kpi-sub">${esc(d.period.label)}</div>
+        </div>
+        <div class="kpi-card ${k.net >= 0 ? 'card-accent-green' : 'card-accent-red'}">
+            <div class="kpi-label">Net Savings</div>
+            <div class="kpi-value ${netClass(k.net)}">${fmtNet(k.net)}</div>
+            <div class="kpi-sub">Income \u2212 Spend</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-label">Savings Rate</div>
+            <div class="kpi-value ${srClass}">${k.savings_rate.toFixed(1)}%</div>
+            <div class="kpi-sub">Net \u00f7 Income</div>
+        </div>`;
+}
+
+// ─── Daily Pace Row ───────────────────────────────────────────
+function renderPace(d) {
+    const p = d.daily_pace;
+    $('paceHorizonLabel').textContent = d.period.label;
+    $('paceRow').innerHTML = `
+        <div class="db-pace-card">
+            <div class="db-pace-label">Avg Daily Income</div>
+            <div class="db-pace-value positive">${fmt(p.avg_daily_income)}</div>
+            <div class="kpi-sub">per day</div>
+        </div>
+        <div class="db-pace-card">
+            <div class="db-pace-label">Avg Daily Spend</div>
+            <div class="db-pace-value negative">${fmt(p.avg_daily_spend)}</div>
+            <div class="kpi-sub">per day</div>
+        </div>
+        <div class="db-pace-card">
+            <div class="db-pace-label">Avg Daily Net</div>
+            <div class="db-pace-value ${netClass(p.avg_daily_net)}">${fmtNet(p.avg_daily_net)}</div>
+            <div class="kpi-sub">per day</div>
+        </div>`;
+}
+
+// ─── Monthly Goal ─────────────────────────────────────────────
+function renderMonthlyGoal(d) {
+    const g = d.monthly_goal;
+    const paceMap = { ahead: 'db-status-green', near: 'db-status-gold', behind: 'db-status-red' };
+    const paceLabel = { ahead: '\u2191 Ahead', near: '\u2192 On Pace', behind: '\u2193 Behind' };
+
+    let badge = '';
+    if (g.pace_status) {
+        badge = `<span class="db-status-badge ${paceMap[g.pace_status]}">${paceLabel[g.pace_status]}</span>`;
+    }
+
+    let html = `<div class="section" style="height:100%">
+        <div class="section-header"><h2>Monthly Goal \u00b7 ${esc(g.month_label)}</h2>${badge}</div>`;
+
+    if (g.goal === null) {
+        // No goal set — show current month actuals + setup prompt
+        html += `
+            <div class="db-two-stat" style="margin-bottom:14px">
+                <div class="db-metric">
+                    <div class="db-metric-label">Net This Month</div>
+                    <div class="db-metric-value lg ${netClass(g.actual_net)}">${fmtNet(g.actual_net)}</div>
+                </div>
+                <div class="db-metric">
+                    <div class="db-metric-label">Day ${g.days_elapsed} of ${g.days_in_month}</div>
+                    <div class="db-metric-value">${g.days_remaining} days left</div>
+                </div>
+            </div>
+            <div class="db-goal-setup">
+                <div class="filter-group" style="flex:1;min-width:0">
+                    <label>Set Monthly Net Savings Goal</label>
+                    <input type="number" id="goalInput" class="db-target-input" placeholder="e.g. 2000" step="100">
+                </div>
+                <div style="display:flex;align-items:flex-end">
+                    <button class="btn btn-primary btn-sm" onclick="saveMonthlyGoal()">Set Goal</button>
+                </div>
+            </div>`;
+    } else {
+        const barPct = Math.max(0, Math.min(100, g.progress_pct || 0));
+        const fillClass = g.pace_status || 'neutral';
+        html += `
+            <div style="margin-bottom:14px">
+                <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+                    <span class="kpi-sub">Progress</span>
+                    <span class="mono" style="font-size:12px">${(g.progress_pct || 0).toFixed(1)}%</span>
+                </div>
+                <div class="db-progress-bar">
+                    <div class="db-progress-fill ${fillClass}" style="width:${barPct}%"></div>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-top:4px">
+                    <span class="mono" style="font-size:12px" class="${netClass(g.actual_net)}">${fmtNet(g.actual_net)} actual</span>
+                    <span class="kpi-sub">${fmt(g.goal)} goal</span>
+                </div>
+            </div>
+            <div class="db-two-stat" style="margin-bottom:12px">
+                <div class="db-metric">
+                    <div class="db-metric-label">Expected by Today</div>
+                    <div class="db-metric-value">${fmt(g.expected_net_today || 0)}</div>
+                    <div class="kpi-sub">Day ${g.days_elapsed}/${g.days_in_month}</div>
+                </div>
+                <div class="db-metric">
+                    <div class="db-metric-label">Proj. End-of-Month</div>
+                    <div class="db-metric-value ${netClass(g.projected_eom_net)}">${fmtNet(g.projected_eom_net)}</div>
+                </div>
+            </div>
+            ${g.required_daily_income !== null ? `
+            <div class="db-highlight-box">
+                <div class="db-highlight-label">Required Daily Income to Hit Goal</div>
+                <div class="db-highlight-value">${fmt(g.required_daily_income)}<span class="db-highlight-unit">/day</span></div>
+                <div class="db-highlight-sub">Assumes ${fmt(g.avg_daily_spend_month)}/day spend \u00b7 ${g.days_remaining} days left</div>
+            </div>` : ''}
+            <div class="target-edit-row" style="padding-top:12px;margin-top:12px;border-top:1px solid var(--border)">
+                <input type="number" id="goalInput" class="target-input" value="${g.goal}" step="100">
+                <button class="target-save-btn" onclick="saveMonthlyGoal()">Update</button>
+                <button class="target-reset-btn" onclick="resetMonthlyGoal()">Clear goal</button>
+            </div>`;
+    }
+
+    html += '</div>';
+    $('monthlyGoalCard').innerHTML = html;
+}
+
+// ─── Forecast ─────────────────────────────────────────────────
+function renderForecast(d) {
+    const f = d.forecast;
+    $('forecastCard').innerHTML = `
+        <div class="section" style="height:100%">
+            <div class="section-header"><h2>Forecast</h2></div>
+            <div class="kpi-sub" style="margin-bottom:16px">${esc(f.label)}</div>
+            <div class="db-forecast-grid">
+                <div class="db-metric">
+                    <div class="db-metric-label">Proj. Monthly Income</div>
+                    <div class="db-metric-value positive">${fmt(f.projected_monthly_income)}</div>
+                </div>
+                <div class="db-metric">
+                    <div class="db-metric-label">Proj. Monthly Spend</div>
+                    <div class="db-metric-value negative">${fmt(f.projected_monthly_spend)}</div>
+                </div>
+                <div class="db-metric">
+                    <div class="db-metric-label">Proj. Monthly Net</div>
+                    <div class="db-metric-value ${netClass(f.projected_monthly_net)}">${fmtNet(f.projected_monthly_net)}</div>
+                </div>
+                <div class="db-metric">
+                    <div class="db-metric-label">Proj. Annual Net</div>
+                    <div class="db-metric-value ${netClass(f.projected_annual_net)}">${fmtNet(f.projected_annual_net)}</div>
+                </div>
+            </div>
+        </div>`;
+}
+
+// ─── Trend Chart ──────────────────────────────────────────────
+function renderTrend(d) {
+    const { trend, period } = d;
+    const bucketLabel = trend.bucket === 'daily' ? 'daily' : trend.bucket === 'weekly' ? 'weekly' : 'monthly';
+    $('trendMeta').textContent = `${period.label} · ${bucketLabel} buckets`;
+
+    if (state.chart) { state.chart.destroy(); state.chart = null; }
+    if (!trend.data.length) return;
+
+    state.chart = new Chart($('trendChart'), {
+        data: {
+            labels: trend.data.map(r => r.label),
+            datasets: [
+                { type:'bar',  label:'Income', data: trend.data.map(r => r.income),
+                  backgroundColor:'rgba(52,211,153,0.7)', borderRadius:3, order:2 },
+                { type:'bar',  label:'Spend',  data: trend.data.map(r => r.spend),
+                  backgroundColor:'rgba(248,113,113,0.7)', borderRadius:3, order:2 },
+                { type:'line', label:'Net',    data: trend.data.map(r => r.net),
+                  borderColor:'#6366f1', backgroundColor:'transparent',
+                  borderWidth:2, pointRadius:2, tension:0.3, order:1 },
+            ]
+        },
+        options: {
+            responsive:true, maintainAspectRatio:false,
+            plugins: {
+                legend: { labels: { color:'#94a3b8', font:{ family:'DM Sans' }, boxWidth:12 } },
+                tooltip: { callbacks: { label: ctx => ` $${Math.abs(ctx.parsed.y).toLocaleString('en-US',{minimumFractionDigits:2})}` } }
+            },
+            scales: {
+                x: { ticks:{ color:'#64748b', maxRotation:45, font:{size:11} }, grid:{ color:'rgba(148,163,184,0.07)' } },
+                y: { ticks:{ color:'#64748b', callback: v => '$'+v.toLocaleString() }, grid:{ color:'rgba(148,163,184,0.07)' } }
+            }
+        }
     });
 }
-const catData = {{ categories|tojson }};
-if (catData.length > 0) {
-    const pal = ['#6366f1','#f59e0b','#10b981','#ef4444','#8b5cf6','#ec4899','#06b6d4','#f97316','#14b8a6','#e11d48','#3b82f6','#a855f7','#eab308','#22c55e','#64748b'];
-    new Chart(document.getElementById('categoryChart'), {
-        type: 'doughnut', data: { labels: catData.map(c => c.category), datasets: [{ data: catData.map(c => c.total), backgroundColor: pal.slice(0, catData.length), borderWidth: 0, hoverOffset: 6 }] },
-        options: { responsive: true, maintainAspectRatio: false, cutout: '65%', plugins: { legend: { position: 'right', labels: { color: '#94a3b8', font: { family: 'DM Sans', size: 11 }, padding: 10, usePointStyle: true, pointStyleWidth: 8 } },
-            tooltip: { callbacks: { label: ctx => ' $'+ctx.parsed.toLocaleString(undefined,{minimumFractionDigits:2}) } } } }
+
+// ─── Comparison ───────────────────────────────────────────────
+function renderComparison(d) {
+    const c = d.comparison;
+    const rows = [
+        { label:'Income', cur:c.current.income, pri:c.prior.income, delta:c.deltas.income, good: v => v >= 0 },
+        { label:'Spend',  cur:c.current.spend,  pri:c.prior.spend,  delta:c.deltas.spend,  good: v => v <= 0 },
+        { label:'Net',    cur:c.current.net,    pri:c.prior.net,    delta:c.deltas.net,    good: v => v >= 0 },
+    ];
+
+    let inner = `<div class="kpi-sub" style="margin-bottom:10px">${esc(c.current_label)} vs ${esc(c.prior_label)}</div>`;
+    rows.forEach(r => {
+        const cls = r.good(r.delta) ? 'positive' : 'negative';
+        const arrow = r.delta > 0 ? '\u2191' : r.delta < 0 ? '\u2193' : '\u2014';
+        inner += `
+            <div class="db-cmp-row">
+                <span class="db-cmp-name">${esc(r.label)}</span>
+                <div class="db-cmp-vals">
+                    <span class="mono db-cmp-prior">${fmt(r.pri)}</span>
+                    <span class="mono db-cmp-cur">${fmt(r.cur)}</span>
+                    <span class="mono db-delta ${cls}">${arrow} ${fmt(Math.abs(r.delta))}</span>
+                </div>
+            </div>`;
     });
+
+    $('comparisonCard').innerHTML = `<div class="section"><div class="section-header"><h2>vs Prior Period</h2></div>${inner}</div>`;
 }
+
+// ─── Spending Breakdown ───────────────────────────────────────
+function renderSpending(d) {
+    const cats = d.spending_breakdown;
+    const totalSpend = d.kpis.spend;
+    let inner = '';
+
+    if (!cats.length) {
+        inner = '<div class="db-no-data">No spending data for this period.</div>';
+    } else {
+        const maxAmt = cats[0].amount;
+        cats.forEach(c => {
+            const barPct = maxAmt > 0 ? (c.amount / maxAmt * 100) : 0;
+            const ofTotal = totalSpend > 0 ? (c.amount / totalSpend * 100).toFixed(0) + '%' : '';
+            inner += `
+                <div class="db-cat-row">
+                    <div style="flex:1;min-width:0;margin-right:10px">
+                        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">
+                            <span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.category)}</span>
+                            <span class="mono negative" style="font-size:12px;margin-left:6px;white-space:nowrap">${fmt(c.amount)}</span>
+                        </div>
+                        <div class="db-mini-bar-track"><div class="db-mini-bar-fill" style="width:${barPct}%"></div></div>
+                    </div>
+                    <span class="kpi-sub" style="white-space:nowrap">${ofTotal}</span>
+                </div>`;
+        });
+    }
+
+    $('spendingCard').innerHTML = `<div class="section"><div class="section-header"><h2>Top Categories</h2></div>${inner}</div>`;
+}
+
+// ─── Cash Position ────────────────────────────────────────────
+function renderCashPosition(d) {
+    const cp = d.cash_position;
+    const ncCls = netClass(cp.net_change);
+    let runway = '';
+    if (cp.runway_months !== null) {
+        const rwCls = cp.runway_months >= 6 ? 'positive' : cp.runway_months >= 3 ? '' : 'negative';
+        runway = `<div class="db-metric">
+            <div class="db-metric-label">Est. Runway</div>
+            <div class="db-metric-value ${rwCls}">${cp.runway_months.toFixed(1)} mo</div>
+        </div>`;
+    }
+
+    $('cashPositionCard').innerHTML = `
+        <div class="section">
+            <div class="section-header"><h2>Cash Position</h2></div>
+            <div class="db-metric">
+                <div class="db-metric-label">Current Balance</div>
+                <div class="db-metric-value lg ${netClass(cp.current_balance)}">${fmtNet(cp.current_balance)}</div>
+            </div>
+            <div class="db-metric">
+                <div class="db-metric-label">Net Change (Last 30 Days)</div>
+                <div class="db-metric-value ${ncCls}">${fmtDelta(cp.net_change)}</div>
+            </div>
+            <div class="db-metric">
+                <div class="db-metric-label">Avg Monthly Spend (3-mo)</div>
+                <div class="db-metric-value">${fmt(cp.avg_monthly_spend)}</div>
+            </div>
+            ${runway}
+        </div>`;
+}
+
+// ─── Cash Target Tracker ──────────────────────────────────────
+function renderCashTarget(d) {
+    const saved = d.settings.target_cash_balance;
+    $('cashTargetCard').innerHTML = `
+        <div class="section">
+            <div class="section-header"><h2>Cash Target Tracker</h2></div>
+            <div class="db-target-row">
+                <div class="filter-group" style="flex:none">
+                    <label>Target Cash Balance</label>
+                    <input type="number" id="cashTargetInput" class="db-target-input"
+                           placeholder="e.g. 10000" value="${saved !== null && saved !== undefined ? saved : ''}" step="100"
+                           oninput="computeCashTargetLive()">
+                </div>
+                <div style="display:flex;align-items:flex-end;gap:6px">
+                    <button class="btn btn-primary btn-sm" onclick="saveCashTarget()">Save</button>
+                    ${saved !== null && saved !== undefined ? `<button class="btn btn-ghost btn-sm" onclick="clearCashTarget()">Clear</button>` : ''}
+                </div>
+            </div>
+            <div id="cashTargetResult"></div>
+        </div>`;
+
+    if (saved !== null && saved !== undefined) {
+        computeCashTargetResult(saved);
+    }
+}
+
+function computeCashTargetLive() {
+    const val = parseFloat($('cashTargetInput').value);
+    if (!isNaN(val)) computeCashTargetResult(val);
+    else $('cashTargetResult').innerHTML = '';
+}
+
+function computeCashTargetResult(target) {
+    const cp   = state.data.cash_position;
+    const pace = state.data.daily_pace;
+    const current      = cp.current_balance;
+    const gap          = target - current;
+    const avgDailyNet  = pace.avg_daily_net;
+    const avgDailySpend = pace.avg_daily_spend;
+
+    let html = `
+        <div class="db-target-grid">
+            <div class="db-metric">
+                <div class="db-metric-label">Current Balance</div>
+                <div class="db-metric-value">${fmtNet(current)}</div>
+            </div>
+            <div class="db-metric">
+                <div class="db-metric-label">Target Balance</div>
+                <div class="db-metric-value">${fmt(target)}</div>
+            </div>
+            <div class="db-metric">
+                <div class="db-metric-label">Gap Remaining</div>
+                <div class="db-metric-value ${gap <= 0 ? 'positive' : ''}">${gap <= 0 ? '\u2713 At target' : fmt(gap)}</div>
+            </div>
+            <div class="db-metric">
+                <div class="db-metric-label">Avg Daily Net</div>
+                <div class="db-metric-value ${netClass(avgDailyNet)}">${fmtNet(avgDailyNet)}</div>
+            </div>
+        </div>`;
+
+    if (gap <= 0) {
+        html += `<div class="flash flash-success" style="margin-top:10px">You've already reached this target!</div>`;
+    } else if (avgDailyNet <= 0) {
+        html += `<div class="db-unreachable">Target not reachable at current pace — avg daily net is ${fmtNet(avgDailyNet)}. Increase income or reduce spend to make progress.</div>`;
+    } else {
+        const estimatedDays = Math.ceil(gap / avgDailyNet);
+        const goalDate = new Date();
+        goalDate.setDate(goalDate.getDate() + estimatedDays);
+        const dateStr = goalDate.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
+
+        const projRemSpend   = avgDailySpend * estimatedDays;
+        const reqDailyIncome = estimatedDays > 0 ? (gap + projRemSpend) / estimatedDays : 0;
+
+        html += `
+            <div class="db-target-grid" style="margin-top:6px">
+                <div class="db-metric">
+                    <div class="db-metric-label">Est. Days to Target</div>
+                    <div class="db-metric-value">${estimatedDays.toLocaleString()} days</div>
+                </div>
+                <div class="db-metric">
+                    <div class="db-metric-label">Est. Goal Date</div>
+                    <div class="db-metric-value">${dateStr}</div>
+                </div>
+            </div>
+            <div class="db-highlight-box" style="margin-top:10px">
+                <div class="db-highlight-label">Required Daily Income to Reach Target</div>
+                <div class="db-highlight-value">${fmt(reqDailyIncome)}<span class="db-highlight-unit">/day</span></div>
+                <div class="db-highlight-sub">Assumes ${fmt(avgDailySpend)}/day spend continues over ${estimatedDays.toLocaleString()} days</div>
+            </div>`;
+    }
+
+    $('cashTargetResult').innerHTML = html;
+}
+
+async function saveCashTarget() {
+    const val = parseFloat($('cashTargetInput').value);
+    if (isNaN(val)) return;
+    await fetch('/api/dashboard/settings', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({target_cash_balance: val})
+    });
+    computeCashTargetResult(val);
+}
+
+async function clearCashTarget() {
+    await fetch('/api/dashboard/settings', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({target_cash_balance: null})
+    });
+    $('cashTargetInput').value = '';
+    $('cashTargetResult').innerHTML = '';
+}
+
+// ─── Monthly Goal Handlers ────────────────────────────────────
+async function saveMonthlyGoal() {
+    const val = parseFloat($('goalInput').value);
+    if (isNaN(val)) return;
+    await fetch('/api/kpis/settings', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({monthly_net_target: val})
+    });
+    await fetchDashboard();
+}
+
+async function resetMonthlyGoal() {
+    await fetch('/api/kpis/settings', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({monthly_net_target: null})
+    });
+    await fetchDashboard();
+}
+
+// ─── Horizon Selector ─────────────────────────────────────────
+$('horizonBar').addEventListener('click', e => {
+    const btn = e.target.closest('[data-h]');
+    if (!btn) return;
+    const h = btn.dataset.h;
+    document.querySelectorAll('[data-h]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.horizon = h;
+    if (h === 'custom') {
+        $('customRangeRow').classList.remove('hidden');
+    } else {
+        $('customRangeRow').classList.add('hidden');
+        fetchDashboard();
+    }
+});
+
+function applyCustomRange() {
+    const s = $('customStart').value;
+    const e = $('customEnd').value;
+    if (!s || !e) return;
+    state.customStart = s;
+    state.customEnd   = e;
+    fetchDashboard();
+}
+
+// ─── Init ─────────────────────────────────────────────────────
+fetchDashboard();
 </script>
 {% endblock %}
