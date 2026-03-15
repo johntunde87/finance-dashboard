@@ -81,6 +81,27 @@ const state = { horizon: '30d', customStart: null, customEnd: null, data: null, 
 const $  = id => document.getElementById(id);
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 
+// Tiny SVG sparkline (no axes, no labels, minimal)
+function sparkline(values) {
+    if (!values || values.length < 2) return '';
+    const min = Math.min(...values), max = Math.max(...values);
+    const range = max - min || 1;
+    const W = 56, H = 18, pad = 2;
+    const pts = values.map((v, i) => {
+        const x = pad + (i / (values.length - 1)) * (W - 2 * pad);
+        const y = (H - pad) - ((v - min) / range) * (H - 2 * pad);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    return `<svg class="db-sparkline" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+// Savings velocity color
+function velColor(v) {
+    if (v >= 0) return 'positive';
+    if (v > -10) return 'vel-warn';
+    return 'negative';
+}
+
 function fmt(v) {
     return '$' + Math.abs(v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
@@ -131,6 +152,8 @@ function renderAll() {
 function renderKPIs(d) {
     const k = d.kpis;
     const srClass = k.savings_rate >= 0 ? 'positive' : 'negative';
+    const vc = velColor(k.savings_velocity_daily);
+    const trendNets = (d.trend && d.trend.data) ? d.trend.data.map(r => r.net) : [];
     $('kpiRow').innerHTML = `
         <div class="kpi-card">
             <div class="kpi-label">Income</div>
@@ -145,18 +168,27 @@ function renderKPIs(d) {
         <div class="kpi-card ${k.net >= 0 ? 'card-accent-green' : 'card-accent-red'}">
             <div class="kpi-label">Net Savings</div>
             <div class="kpi-value ${netClass(k.net)}">${fmtNet(k.net)}</div>
-            <div class="kpi-sub">Income \u2212 Spend</div>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+                <div class="kpi-sub">Income \u2212 Spend</div>
+                <span class="${netClass(k.net)}">${sparkline(trendNets)}</span>
+            </div>
         </div>
         <div class="kpi-card">
             <div class="kpi-label">Savings Rate</div>
             <div class="kpi-value ${srClass}">${k.savings_rate.toFixed(1)}%</div>
             <div class="kpi-sub">Net \u00f7 Income</div>
+        </div>
+        <div class="kpi-card ${vc === 'positive' ? 'card-accent-green' : vc === 'negative' ? 'card-accent-red' : ''}">
+            <div class="kpi-label">Savings Velocity</div>
+            <div class="kpi-value ${vc}">${fmtNet(k.savings_velocity_daily)}<span style="font-family:'DM Sans',sans-serif;font-size:13px;font-weight:400;color:var(--text-muted);margin-left:2px">/day</span></div>
+            <div class="kpi-sub">${fmtNet(k.savings_velocity_monthly)}/mo</div>
         </div>`;
 }
 
 // ─── Daily Pace Row ───────────────────────────────────────────
 function renderPace(d) {
     const p = d.daily_pace;
+    const trendNets = (d.trend && d.trend.data) ? d.trend.data.map(r => r.net) : [];
     $('paceHorizonLabel').textContent = d.period.label;
     $('paceRow').innerHTML = `
         <div class="db-pace-card">
@@ -172,7 +204,10 @@ function renderPace(d) {
         <div class="db-pace-card">
             <div class="db-pace-label">Avg Daily Net</div>
             <div class="db-pace-value ${netClass(p.avg_daily_net)}">${fmtNet(p.avg_daily_net)}</div>
-            <div class="kpi-sub">per day</div>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+                <div class="kpi-sub">per day</div>
+                <span class="${netClass(p.avg_daily_net)}">${sparkline(trendNets)}</span>
+            </div>
         </div>`;
 }
 
@@ -229,10 +264,10 @@ function renderMonthlyGoal(d) {
                     <span class="kpi-sub">${fmt(g.goal)} goal</span>
                 </div>
             </div>
-            <div class="db-two-stat" style="margin-bottom:12px">
+            <div class="db-two-stat" style="margin-bottom:8px">
                 <div class="db-metric">
-                    <div class="db-metric-label">Expected by Today</div>
-                    <div class="db-metric-value">${fmt(g.expected_net_today || 0)}</div>
+                    <div class="db-metric-label">Target by Today</div>
+                    <div class="db-metric-value">${fmtNet(g.expected_net_today || 0)}</div>
                     <div class="kpi-sub">Day ${g.days_elapsed}/${g.days_in_month}</div>
                 </div>
                 <div class="db-metric">
@@ -240,11 +275,15 @@ function renderMonthlyGoal(d) {
                     <div class="db-metric-value ${netClass(g.projected_eom_net)}">${fmtNet(g.projected_eom_net)}</div>
                 </div>
             </div>
+            ${g.pace_gap !== null && g.pace_gap !== undefined ? `
+            <div style="font-size:12px;font-weight:600;padding:5px 10px;margin-bottom:12px;border-radius:var(--radius-sm);background:var(--bg-primary);color:${g.pace_gap >= 0 ? 'var(--green)' : 'var(--red)'}">
+                ${g.pace_gap >= 0 ? `Ahead of Pace: ${fmt(g.pace_gap)}` : `Behind Pace: ${fmt(Math.abs(g.pace_gap))}`}
+            </div>` : '<div style="margin-bottom:12px"></div>'}
             ${g.required_daily_income !== null ? `
             <div class="db-highlight-box">
                 <div class="db-highlight-label">Required Daily Income to Hit Goal</div>
                 <div class="db-highlight-value">${fmt(g.required_daily_income)}<span class="db-highlight-unit">/day</span></div>
-                <div class="db-highlight-sub">Assumes ${fmt(g.avg_daily_spend_month)}/day spend \u00b7 ${g.days_remaining} days left</div>
+                <div class="db-highlight-sub">Assumes ${fmt(g.estimated_daily_spend)}/day spend \u00b7 ${g.days_remaining} days left</div>
             </div>` : ''}
             <div class="target-edit-row" style="padding-top:12px;margin-top:12px;border-top:1px solid var(--border)">
                 <input type="number" id="goalInput" class="target-input" value="${g.goal}" step="100">
@@ -260,6 +299,7 @@ function renderMonthlyGoal(d) {
 // ─── Forecast ─────────────────────────────────────────────────
 function renderForecast(d) {
     const f = d.forecast;
+    const trendNets = (d.trend && d.trend.data) ? d.trend.data.map(r => r.net) : [];
     $('forecastCard').innerHTML = `
         <div class="section" style="height:100%">
             <div class="section-header"><h2>Forecast</h2></div>
@@ -276,6 +316,7 @@ function renderForecast(d) {
                 <div class="db-metric">
                     <div class="db-metric-label">Proj. Monthly Net</div>
                     <div class="db-metric-value ${netClass(f.projected_monthly_net)}">${fmtNet(f.projected_monthly_net)}</div>
+                    <span class="${netClass(f.projected_monthly_net)}">${sparkline(trendNets)}</span>
                 </div>
                 <div class="db-metric">
                     <div class="db-metric-label">Proj. Annual Net</div>
@@ -382,14 +423,25 @@ function renderSpending(d) {
 function renderCashPosition(d) {
     const cp = d.cash_position;
     const ncCls = netClass(cp.net_change);
+
+    // Runway: show in days if < 1 month
     let runway = '';
     if (cp.runway_months !== null) {
         const rwCls = cp.runway_months >= 6 ? 'positive' : cp.runway_months >= 3 ? '' : 'negative';
+        let rwDisplay;
+        if (cp.runway_months < 1 && cp.runway_days !== null) {
+            rwDisplay = cp.runway_days < 1 ? '&lt; 1 day' : `${cp.runway_days.toFixed(1)} days`;
+        } else {
+            rwDisplay = `${cp.runway_months.toFixed(1)} mo`;
+        }
         runway = `<div class="db-metric">
             <div class="db-metric-label">Est. Runway</div>
-            <div class="db-metric-value ${rwCls}">${cp.runway_months.toFixed(1)} mo</div>
+            <div class="db-metric-value ${rwCls}">${rwDisplay}</div>
         </div>`;
     }
+
+    const balSpark = (cp.balance_sparkline && cp.balance_sparkline.length >= 2)
+        ? `<span class="${netClass(cp.current_balance)}">${sparkline(cp.balance_sparkline)}</span>` : '';
 
     $('cashPositionCard').innerHTML = `
         <div class="section">
@@ -397,6 +449,7 @@ function renderCashPosition(d) {
             <div class="db-metric">
                 <div class="db-metric-label">Current Balance</div>
                 <div class="db-metric-value lg ${netClass(cp.current_balance)}">${fmtNet(cp.current_balance)}</div>
+                <div style="display:flex;justify-content:flex-end">${balSpark}</div>
             </div>
             <div class="db-metric">
                 <div class="db-metric-label">Net Change (Last 30 Days)</div>

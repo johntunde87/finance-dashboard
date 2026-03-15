@@ -373,7 +373,13 @@ input:focus,select:focus { outline:none; border-color:var(--accent); }
 .db-row-label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-muted); margin-bottom:8px; margin-top:4px; }
 
 /* ─── KPI row (reuses .kpi-grid) ──────────── */
-.db-kpi-row { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:8px; }
+.db-kpi-row { display:grid; grid-template-columns:repeat(5,1fr); gap:14px; margin-bottom:8px; }
+
+/* ─── Sparklines ───────────────────────────── */
+.db-sparkline { display:inline-block; vertical-align:middle; opacity:0.65; }
+
+/* ─── Velocity near-zero color ─────────────── */
+.vel-warn { color:var(--gold); }
 
 /* ─── Daily pace row ───────────────────────── */
 .db-pace-row { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:24px; }
@@ -443,7 +449,7 @@ input:focus,select:focus { outline:none; border-color:var(--accent); }
 
 /* ─── Responsive ───────────────────────────── */
 @media (max-width:768px) {
-    .db-kpi-row      { grid-template-columns:repeat(2,1fr); gap:10px; }
+    .db-kpi-row      { grid-template-columns:repeat(3,1fr); gap:10px; }
     .db-pace-row     { grid-template-columns:1fr; gap:10px; }
     .db-two-col      { grid-template-columns:1fr; }
     .db-three-col    { grid-template-columns:1fr; }

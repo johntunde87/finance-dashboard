@@ -911,7 +911,7 @@ def get_comparison_periods(horizon, start_date, end_date, days):
         return date(py, 1, 1).isoformat(), pe.isoformat(), f'YTD {py}'
 
 
-def compute_monthly_goal_tracking(conn, monthly_net_target):
+def compute_monthly_goal_tracking(conn, monthly_net_target, avg_3mo_daily_spend=None):
     """Always based on current calendar month, not the selected horizon."""
     today = date.today()
     month_start = date(today.year, today.month, 1).isoformat()
@@ -934,20 +934,28 @@ def compute_monthly_goal_tracking(conn, monthly_net_target):
     avg_daily_net_month   = actual_net / days_elapsed if days_elapsed > 0 else 0.0
     projected_eom_net     = round(avg_daily_net_month * days_in_month, 2)
 
+    # Improved spend estimate: min(MTD pace, 3-month baseline) to dampen early-month spikes
+    if avg_3mo_daily_spend is not None and avg_3mo_daily_spend > 0:
+        estimated_daily_spend = min(avg_daily_spend_month, avg_3mo_daily_spend)
+    else:
+        estimated_daily_spend = avg_daily_spend_month
+
     goal          = None
     progress_pct  = None
     expected_net  = None
     pace_status   = None
     req_daily_net = None
     req_daily_inc = None
+    pace_gap       = None
 
     if monthly_net_target is not None:
         goal = round(monthly_net_target, 2)
         progress_pct  = round(actual_net / monthly_net_target * 100, 1) if monthly_net_target != 0 else None
         expected_net  = round(monthly_net_target * days_elapsed / days_in_month, 2)
+        pace_gap      = round(actual_net - expected_net, 2)
         if days_remaining > 0:
             req_daily_net = round((monthly_net_target - actual_net) / days_remaining, 2)
-            proj_rem_spd  = avg_daily_spend_month * days_remaining
+            proj_rem_spd  = estimated_daily_spend * days_remaining
             req_daily_inc = round((max(0.0, monthly_net_target - actual_net) + proj_rem_spd) / days_remaining, 2)
         # Pace status: ahead if actual >= expected × 1.05, near >= 0.85, else behind
         if expected_net is not None:
@@ -965,6 +973,7 @@ def compute_monthly_goal_tracking(conn, monthly_net_target):
         'actual_spend':            round(cur_spd, 2),
         'progress_pct':            progress_pct,
         'expected_net_today':      expected_net,
+        'pace_gap':                pace_gap,
         'pace_status':             pace_status,
         'projected_eom_net':       projected_eom_net,
         'required_daily_net':      req_daily_net,
@@ -973,6 +982,7 @@ def compute_monthly_goal_tracking(conn, monthly_net_target):
         'days_in_month':           days_in_month,
         'days_remaining':          days_remaining,
         'avg_daily_spend_month':   round(avg_daily_spend_month, 2),
+        'estimated_daily_spend':   round(estimated_daily_spend, 2),
         'month_label':             today.strftime('%B %Y'),
     }
 
@@ -1002,6 +1012,7 @@ def api_dashboard():
     avg_daily_income = round(income / days, 2)
     avg_daily_spend  = round(spend  / days, 2)
     avg_daily_net    = round(net    / days, 2)
+    savings_velocity_monthly = round(avg_daily_net * 30, 2)
 
     # ── Cash position  (current balance never changes with horizon)
     current_balance = get_current_balance(conn)
@@ -1036,13 +1047,28 @@ def api_dashboard():
 
     r3m = compute_rolling_3month_avg(conn)
     avg_monthly_spend = r3m['avg_monthly']['spend']
-    runway_months = round(current_balance / avg_monthly_spend, 1) if avg_monthly_spend > 0 else None
+    runway_months     = round(current_balance / avg_monthly_spend, 1) if avg_monthly_spend > 0 else None
+    runway_days       = round(current_balance / avg_monthly_spend * 30, 1) if avg_monthly_spend > 0 else None
+    avg_3mo_daily_spend = round(avg_monthly_spend / 30, 2) if avg_monthly_spend > 0 else 0.0
 
-    # ── Forecast (based on selected horizon daily averages × 30/365)
+    # ── Forecast: weighted (70% last-30-day trend, 30% selected-horizon baseline)
     projected_monthly_income = round(avg_daily_income * 30, 2)
     projected_monthly_spend  = round(avg_daily_spend  * 30, 2)
-    projected_monthly_net    = round(avg_daily_net    * 30, 2)
-    projected_annual_net     = round(avg_daily_net    * 365, 2)
+    today_dt     = date.today()
+    recent_start = (today_dt - timedelta(days=29)).isoformat()
+    recent_end   = today_dt.isoformat()
+    recent_inc = conn.execute(
+        'SELECT COALESCE(SUM(amount),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount>0 AND is_internal_transfer=0',
+        (recent_start, recent_end)
+    ).fetchone()[0]
+    recent_spd = conn.execute(
+        'SELECT COALESCE(SUM(ABS(amount)),0) FROM transactions WHERE posting_date>=? AND posting_date<=? AND amount<0 AND is_internal_transfer=0',
+        (recent_start, recent_end)
+    ).fetchone()[0]
+    daily_net_recent   = (recent_inc - recent_spd) / 30
+    forecast_daily_net = round(0.7 * daily_net_recent + 0.3 * avg_daily_net, 2)
+    projected_monthly_net = round(forecast_daily_net * 30, 2)
+    projected_annual_net  = round(forecast_daily_net * 365, 2)
 
     # ── Trend chart
     bucket     = trend_bucket(horizon, days)
@@ -1069,9 +1095,16 @@ def api_dashboard():
     ).fetchall()
     spending_breakdown = [{'category': r['category'], 'amount': round(r['amount'], 2), 'count': r['count']} for r in breakdown_rows]
 
+    # ── Balance sparkline (last 30 days, reuse cash-position window)
+    bal_spark_rows = conn.execute(
+        'SELECT balance FROM transactions WHERE balance IS NOT NULL AND posting_date>=? AND posting_date<=? ORDER BY posting_date ASC, id ASC',
+        (l30_start, l30_end)
+    ).fetchall()
+    balance_sparkline = [r['balance'] for r in bal_spark_rows]
+
     # ── Monthly goal tracking (always current calendar month)
     settings     = get_kpi_settings(conn)
-    monthly_goal = compute_monthly_goal_tracking(conn, settings.get('monthly_net_target'))
+    monthly_goal = compute_monthly_goal_tracking(conn, settings.get('monthly_net_target'), avg_3mo_daily_spend)
 
     conn.close()
     return jsonify({
@@ -1083,6 +1116,8 @@ def api_dashboard():
         'kpis': {
             'income': round(income, 2), 'spend': round(spend, 2),
             'net': round(net, 2), 'savings_rate': savings_rate,
+            'savings_velocity_daily':   avg_daily_net,
+            'savings_velocity_monthly': savings_velocity_monthly,
         },
         'daily_pace': {
             'avg_daily_income': avg_daily_income,
@@ -1095,7 +1130,8 @@ def api_dashboard():
             'projected_monthly_spend':  projected_monthly_spend,
             'projected_monthly_net':    projected_monthly_net,
             'projected_annual_net':     projected_annual_net,
-            'label': f'Based on {period_label}',
+            'forecast_daily_net':       forecast_daily_net,
+            'label': f'Weighted \u00b7 70% last 30d / 30% {period_label}',
         },
         'trend': {'bucket': bucket, 'data': trend_data},
         'comparison': {
@@ -1111,10 +1147,12 @@ def api_dashboard():
         },
         'spending_breakdown': spending_breakdown,
         'cash_position': {
-            'current_balance':  round(current_balance, 2),
-            'net_change':       net_change,
+            'current_balance':   round(current_balance, 2),
+            'net_change':        net_change,
             'avg_monthly_spend': round(avg_monthly_spend, 2),
-            'runway_months':    runway_months,
+            'runway_months':     runway_months,
+            'runway_days':       runway_days,
+            'balance_sparkline': balance_sparkline,
         },
         'settings': {
             'monthly_net_target':  settings.get('monthly_net_target'),
